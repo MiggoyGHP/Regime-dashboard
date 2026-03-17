@@ -161,7 +161,27 @@
   }
   .trade-meta-item { display: flex; align-items: center; gap: 4px; }
   .trade-meta-item .dot { width: 6px; height: 6px; border-radius: 50%; }
-  #trade-chart { width: 100%; height: 300px; }
+  #trade-chart { width: 100%; height: 400px; }
+  #macd-chart { width: 100%; height: 160px; }
+
+  /* Indicator toggles */
+  .indicator-toggles {
+    display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; align-items: center;
+  }
+  .indicator-toggles .toggle-label {
+    font-size: 11px; color: var(--text-dim); text-transform: uppercase;
+    letter-spacing: 0.5px; margin-right: 4px;
+  }
+  .indicator-toggle {
+    padding: 4px 10px; border-radius: 5px; cursor: pointer;
+    font-size: 11px; font-weight: 600; transition: all 0.2s;
+    border: 1px solid; user-select: none;
+  }
+  .indicator-toggle.active { opacity: 1; }
+  .indicator-toggle:not(.active) { opacity: 0.35; }
+  .toggle-separator {
+    width: 1px; height: 20px; background: var(--border); margin: 0 4px;
+  }
 
   /* All trades table */
   .trades-table-section {
@@ -280,7 +300,19 @@
   <div class="trade-detail" id="trade-detail-section" style="display:none;">
     <h2 id="trade-detail-title">Select a trade to view details</h2>
     <div class="trade-meta" id="trade-detail-meta"></div>
+    <div class="indicator-toggles" id="indicator-toggles">
+      <span class="toggle-label">EMAs:</span>
+      <div class="indicator-toggle active" data-indicator="ema10" style="color:#f59e0b; border-color:#f59e0b; background:rgba(245,158,11,0.1);">10</div>
+      <div class="indicator-toggle active" data-indicator="ema20" style="color:#3b82f6; border-color:#3b82f6; background:rgba(59,130,246,0.1);">20</div>
+      <div class="indicator-toggle active" data-indicator="ema25" style="color:#8b5cf6; border-color:#8b5cf6; background:rgba(139,92,246,0.1);">25</div>
+      <div class="indicator-toggle active" data-indicator="ema50" style="color:#ec4899; border-color:#ec4899; background:rgba(236,72,153,0.1);">50</div>
+      <div class="indicator-toggle active" data-indicator="ema200" style="color:#ef4444; border-color:#ef4444; background:rgba(239,68,68,0.1);">200</div>
+      <div class="toggle-separator"></div>
+      <span class="toggle-label">MACD:</span>
+      <div class="indicator-toggle active" data-indicator="macd" style="color:#06b6d4; border-color:#06b6d4; background:rgba(6,182,212,0.1);">12,26,9</div>
+    </div>
     <div id="trade-chart"></div>
+    <div id="macd-chart"></div>
   </div>
 
   <!-- All trades table -->
@@ -326,24 +358,52 @@
 
 <script>
 let DATA = null;
+let OHLC = null;
 let currentRegime = 1;
 let currentColorFilter = 'all';
 let selectedTradeIdx = null;
-let equityChart, equitySeries, equityRegimeMarkers;
+let equityChart, equitySeries;
 let drawdownChart, drawdownSeries;
-let tradeChart, tradeSeries;
+let tradeChart, tradeSeries, macdChart;
+let tradeEmaSeries = {};
+let macdLineSeries, macdSignalSeries, macdHistSeries;
+let indicatorState = { ema10: true, ema20: true, ema25: true, ema50: true, ema200: true, macd: true };
 let sortField = 'pnl', sortDir = -1;
 let searchTerm = '';
 let tableColorFilter = 'all';
 let tableTypeFilter = 'all';
 let currentPage = 1;
 const PAGE_SIZE = 20;
+const CANDLES_BEFORE = 120;
+const CANDLES_AFTER = 40;
 
-fetch('data.json').then(r => r.json()).then(d => { DATA = d; init(); });
+const EMA_CONFIG = {
+  ema10:  { period: 10,  color: '#f59e0b', label: '10 EMA' },
+  ema20:  { period: 20,  color: '#3b82f6', label: '20 EMA' },
+  ema25:  { period: 25,  color: '#8b5cf6', label: '25 EMA' },
+  ema50:  { period: 50,  color: '#ec4899', label: '50 EMA' },
+  ema200: { period: 200, color: '#ef4444', label: '200 EMA' },
+};
+
+const CHART_OPTS = {
+  layout: { background: { color: '#1a1d29' }, textColor: '#8b8fa3' },
+  grid: { vertLines: { color: '#2a2e3d' }, horzLines: { color: '#2a2e3d' } },
+  crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+  rightPriceScale: { borderColor: '#2a2e3d' },
+  timeScale: { borderColor: '#2a2e3d', timeVisible: false },
+  handleScroll: { vertTouchDrag: false },
+};
+
+// Load both data files in parallel
+Promise.all([
+  fetch('data.json').then(r => r.json()),
+  fetch('ohlc.json').then(r => r.json()),
+]).then(([d, o]) => { DATA = d; OHLC = o; init(); });
 
 function init() {
   setupRegimeButtons();
   setupColorFilter();
+  setupIndicatorToggles();
   createEquityChart();
   createDrawdownChart();
   setupTableControls();
@@ -380,6 +440,32 @@ function setupColorFilter() {
     });
     container.appendChild(btn);
   });
+}
+
+function setupIndicatorToggles() {
+  document.querySelectorAll('.indicator-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const ind = btn.dataset.indicator;
+      indicatorState[ind] = !indicatorState[ind];
+      btn.classList.toggle('active', indicatorState[ind]);
+      applyIndicatorVisibility();
+    });
+  });
+}
+
+function applyIndicatorVisibility() {
+  for (const [key, series] of Object.entries(tradeEmaSeries)) {
+    if (series) series.applyOptions({ visible: indicatorState[key] });
+  }
+  const macdContainer = document.getElementById('macd-chart');
+  if (indicatorState.macd) {
+    macdContainer.style.display = 'block';
+    if (macdLineSeries) macdLineSeries.applyOptions({ visible: true });
+    if (macdSignalSeries) macdSignalSeries.applyOptions({ visible: true });
+    if (macdHistSeries) macdHistSeries.applyOptions({ visible: true });
+  } else {
+    macdContainer.style.display = 'none';
+  }
 }
 
 function setupTableControls() {
@@ -420,13 +506,8 @@ function render() {
   renderTable();
 }
 
-function getTrades() {
-  return DATA.regimeTrades[`regime${currentRegime}`];
-}
-
-function getStats() {
-  return DATA.regimeStats[`regime${currentRegime}`];
-}
+function getTrades() { return DATA.regimeTrades[`regime${currentRegime}`]; }
+function getStats() { return DATA.regimeStats[`regime${currentRegime}`]; }
 
 function fmt(n, decimals = 0) {
   if (n === undefined || n === null) return '—';
@@ -436,6 +517,53 @@ function fmt(n, decimals = 0) {
 function fmtPnL(n) {
   const s = '$' + fmt(Math.abs(n), 2);
   return n >= 0 ? '+' + s : '-' + s;
+}
+
+// --- Technical indicator calculations ---
+function calcEMA(closes, period) {
+  const ema = [];
+  const k = 2 / (period + 1);
+  let prev = null;
+  for (let i = 0; i < closes.length; i++) {
+    if (i < period - 1) { ema.push(null); continue; }
+    if (prev === null) {
+      let sum = 0;
+      for (let j = i - period + 1; j <= i; j++) sum += closes[j];
+      prev = sum / period;
+    } else {
+      prev = closes[i] * k + prev * (1 - k);
+    }
+    ema.push(prev);
+  }
+  return ema;
+}
+
+function calcMACD(closes, fast = 12, slow = 26, signal = 9) {
+  const emaFast = calcEMA(closes, fast);
+  const emaSlow = calcEMA(closes, slow);
+  const macdLine = [];
+  for (let i = 0; i < closes.length; i++) {
+    if (emaFast[i] !== null && emaSlow[i] !== null) macdLine.push(emaFast[i] - emaSlow[i]);
+    else macdLine.push(null);
+  }
+  const nonNull = macdLine.filter(v => v !== null);
+  const signalLine = calcEMA(nonNull, signal);
+  const result = { macd: [], signal: [], histogram: [] };
+  let si = 0;
+  for (let i = 0; i < macdLine.length; i++) {
+    if (macdLine[i] === null) {
+      result.macd.push(null);
+      result.signal.push(null);
+      result.histogram.push(null);
+    } else {
+      const sig = signalLine[si] !== null ? signalLine[si] : null;
+      result.macd.push(macdLine[i]);
+      result.signal.push(sig);
+      result.histogram.push(sig !== null ? macdLine[i] - sig : null);
+      si++;
+    }
+  }
+  return result;
 }
 
 function renderSummary() {
@@ -472,7 +600,6 @@ function renderRegimeColorCards() {
     { key: 'Red', cls: 'red-card', dotColor: 'var(--red)' },
     { key: 'Unknown', cls: 'unknown-card', dotColor: 'var(--unknown)' },
   ];
-
   const html = colors.map(c => {
     const s = stats[c.key] || {};
     const totalPnL = s['Total P&L'] || 0;
@@ -487,39 +614,16 @@ function renderRegimeColorCards() {
           ${c.key} Regime
         </div>
         <div class="stats-grid">
-          <div class="mini-stat">
-            <div class="mini-label">Total P&L</div>
-            <div class="mini-value ${totalPnL >= 0 ? 'positive' : 'negative'}">${fmtPnL(totalPnL)}</div>
-          </div>
-          <div class="mini-stat">
-            <div class="mini-label"># Trades</div>
-            <div class="mini-value">${fmt(nTrades)}</div>
-          </div>
-          <div class="mini-stat">
-            <div class="mini-label">Win Rate</div>
-            <div class="mini-value">${(winRate * 100).toFixed(1)}%</div>
-          </div>
-          <div class="mini-stat">
-            <div class="mini-label">Avg P&L</div>
-            <div class="mini-value ${avgPnL >= 0 ? 'positive' : 'negative'}">${fmtPnL(avgPnL)}</div>
-          </div>
-          <div class="mini-stat">
-            <div class="mini-label">Profit Factor</div>
-            <div class="mini-value">${pf ? pf.toFixed(2) : '—'}</div>
-          </div>
-          <div class="mini-stat">
-            <div class="mini-label">Best</div>
-            <div class="mini-value positive">${fmtPnL(s['Best Trade'] || 0)}</div>
-          </div>
+          <div class="mini-stat"><div class="mini-label">Total P&L</div><div class="mini-value ${totalPnL >= 0 ? 'positive' : 'negative'}">${fmtPnL(totalPnL)}</div></div>
+          <div class="mini-stat"><div class="mini-label"># Trades</div><div class="mini-value">${fmt(nTrades)}</div></div>
+          <div class="mini-stat"><div class="mini-label">Win Rate</div><div class="mini-value">${(winRate * 100).toFixed(1)}%</div></div>
+          <div class="mini-stat"><div class="mini-label">Avg P&L</div><div class="mini-value ${avgPnL >= 0 ? 'positive' : 'negative'}">${fmtPnL(avgPnL)}</div></div>
+          <div class="mini-stat"><div class="mini-label">Profit Factor</div><div class="mini-value">${pf ? pf.toFixed(2) : '—'}</div></div>
+          <div class="mini-stat"><div class="mini-label">Best</div><div class="mini-value positive">${fmtPnL(s['Best Trade'] || 0)}</div></div>
         </div>
       </div>`;
   }).join('');
   document.getElementById('regime-color-cards').innerHTML = html;
-}
-
-function getRegimeColorForDate(dateStr) {
-  const ec = DATA.equityCurve.find(e => e.date === dateStr);
-  return ec ? ec.regimeColor : 'Unknown';
 }
 
 function regimeColorToHex(color) {
@@ -533,37 +637,18 @@ function regimeColorToHex(color) {
 
 function createEquityChart() {
   const container = document.getElementById('equity-chart');
-  equityChart = LightweightCharts.createChart(container, {
-    layout: { background: { color: '#1a1d29' }, textColor: '#8b8fa3' },
-    grid: { vertLines: { color: '#2a2e3d' }, horzLines: { color: '#2a2e3d' } },
-    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-    rightPriceScale: { borderColor: '#2a2e3d' },
-    timeScale: { borderColor: '#2a2e3d', timeVisible: false },
-    handleScroll: { vertTouchDrag: false },
-  });
+  equityChart = LightweightCharts.createChart(container, CHART_OPTS);
   equitySeries = equityChart.addAreaSeries({
-    lineColor: '#3b82f6',
-    topColor: 'rgba(59,130,246,0.3)',
-    bottomColor: 'rgba(59,130,246,0.02)',
-    lineWidth: 2,
+    lineColor: '#3b82f6', topColor: 'rgba(59,130,246,0.3)',
+    bottomColor: 'rgba(59,130,246,0.02)', lineWidth: 2,
   });
 }
 
 function renderEquityChart() {
   const ec = DATA.equityCurve;
-  const data = ec.map(e => ({ time: e.date, value: e.cumPnL }));
-  equitySeries.setData(data);
-
-  // Add regime color markers
-  const markers = ec.filter((e, i) => {
-    if (i === 0) return true;
-    return e.regimeColor !== ec[i-1].regimeColor;
-  }).map(e => ({
-    time: e.date,
-    position: 'belowBar',
-    color: regimeColorToHex(e.regimeColor),
-    shape: 'circle',
-    text: e.regimeColor,
+  equitySeries.setData(ec.map(e => ({ time: e.date, value: e.cumPnL })));
+  const markers = ec.filter((e, i) => i === 0 || e.regimeColor !== ec[i-1].regimeColor).map(e => ({
+    time: e.date, position: 'belowBar', color: regimeColorToHex(e.regimeColor), shape: 'circle', text: e.regimeColor,
   }));
   equitySeries.setMarkers(markers);
   equityChart.timeScale().fitContent();
@@ -571,40 +656,25 @@ function renderEquityChart() {
 
 function createDrawdownChart() {
   const container = document.getElementById('drawdown-chart');
-  drawdownChart = LightweightCharts.createChart(container, {
-    layout: { background: { color: '#1a1d29' }, textColor: '#8b8fa3' },
-    grid: { vertLines: { color: '#2a2e3d' }, horzLines: { color: '#2a2e3d' } },
-    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-    rightPriceScale: { borderColor: '#2a2e3d' },
-    timeScale: { borderColor: '#2a2e3d', timeVisible: false },
-    handleScroll: { vertTouchDrag: false },
-  });
+  drawdownChart = LightweightCharts.createChart(container, CHART_OPTS);
   drawdownSeries = drawdownChart.addAreaSeries({
-    lineColor: '#ef4444',
-    topColor: 'rgba(239,68,68,0.05)',
-    bottomColor: 'rgba(239,68,68,0.25)',
-    lineWidth: 2,
-    invertFilledArea: true,
+    lineColor: '#ef4444', topColor: 'rgba(239,68,68,0.05)',
+    bottomColor: 'rgba(239,68,68,0.25)', lineWidth: 2, invertFilledArea: true,
   });
 }
 
 function renderDrawdownChart() {
   const ec = DATA.equityCurve;
-  const data = ec.map(e => ({ time: e.date, value: e.drawdown }));
-  drawdownSeries.setData(data);
+  drawdownSeries.setData(ec.map(e => ({ time: e.date, value: e.drawdown })));
   drawdownChart.timeScale().fitContent();
 }
 
 function renderPerformers() {
   const trades = getTrades();
   const filtered = currentColorFilter === 'all' ? trades : trades.filter(t => t.regimeColor === currentColorFilter);
-
   const sorted = [...filtered].sort((a, b) => b.pnl - a.pnl);
-  const top5 = sorted.slice(0, 5);
-  const bottom5 = sorted.slice(-5).reverse();
-
-  renderPerformerList('top-performers', top5, 'top');
-  renderPerformerList('bottom-performers', bottom5, 'bottom');
+  renderPerformerList('top-performers', sorted.slice(0, 5), 'top');
+  renderPerformerList('bottom-performers', sorted.slice(-5).reverse(), 'bottom');
 }
 
 function renderPerformerList(containerId, items, type) {
@@ -613,8 +683,7 @@ function renderPerformerList(containerId, items, type) {
     const pctChange = t.entry > 0 ? ((t.exit - t.entry) / t.entry * 100) : 0;
     const isTop = type === 'top';
     return `
-      <div class="performer-item" data-symbol="${t.symbol}" data-date="${t.date}"
-           onclick="showTradeDetail('${t.symbol}', '${t.date}', '${t.regimeColor}')">
+      <div class="performer-item" onclick="showTradeDetail('${t.symbol}', '${t.date}', '${t.regimeColor}')">
         <div class="performer-rank ${isTop ? 'top-rank' : 'bottom-rank'}">${i + 1}</div>
         <div class="performer-info">
           <div class="performer-symbol">${t.symbol}</div>
@@ -638,7 +707,6 @@ function showTradeDetail(symbol, date, regimeColor) {
   if (!trade) return;
 
   document.getElementById('trade-detail-title').textContent = `${trade.symbol} — Trade Detail`;
-
   const pctChange = trade.entry > 0 ? ((trade.exit - trade.entry) / trade.entry * 100) : 0;
   document.getElementById('trade-detail-meta').innerHTML = `
     <span class="trade-meta-item"><span class="dot" style="background:${regimeColorToHex(trade.regimeColor)}"></span> ${trade.regimeColor}</span>
@@ -651,149 +719,193 @@ function showTradeDetail(symbol, date, regimeColor) {
     <span class="trade-meta-item">${pctChange >= 0 ? '+' : ''}${pctChange.toFixed(2)}%</span>
     <span class="trade-meta-item">Fees: $${Math.abs(trade.fees).toFixed(2)}</span>
   `;
-
   renderTradeChart(trade);
 }
 
 function renderTradeChart(trade) {
   const container = document.getElementById('trade-chart');
+  const macdContainer = document.getElementById('macd-chart');
   container.innerHTML = '';
+  macdContainer.innerHTML = '';
+  tradeEmaSeries = {};
 
-  tradeChart = LightweightCharts.createChart(container, {
-    layout: { background: { color: '#1a1d29' }, textColor: '#8b8fa3' },
-    grid: { vertLines: { color: '#2a2e3d' }, horzLines: { color: '#2a2e3d' } },
-    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-    rightPriceScale: { borderColor: '#2a2e3d' },
-    timeScale: { borderColor: '#2a2e3d', timeVisible: false },
-    handleScroll: { vertTouchDrag: false },
-  });
-
-  // Create a simulated price movement from entry to exit
-  const entryDate = new Date(trade.date);
+  const baseTicker = trade.symbol.split(' ')[0];
+  const tickerData = OHLC[baseTicker];
   const isWin = trade.pnl >= 0;
   const entryPrice = trade.entry;
   const exitPrice = trade.exit;
 
-  // Generate synthetic intraday-like price action
-  const numPoints = 30;
-  const priceData = [];
-  const startTs = entryDate.getTime() / 1000;
-
-  for (let i = 0; i <= numPoints; i++) {
-    const t = i / numPoints;
-    // Smooth curve from entry to exit with some noise
-    const basePrice = entryPrice + (exitPrice - entryPrice) * t;
-    const range = Math.abs(exitPrice - entryPrice) || entryPrice * 0.02;
-    const noise = (Math.sin(t * Math.PI * 6) * 0.15 + Math.sin(t * Math.PI * 13) * 0.08) * range;
-    const price = basePrice + noise;
-
-    const dayOffset = Math.floor(i * 20 / numPoints);
-    const date = new Date(entryDate);
-    date.setDate(date.getDate() + dayOffset);
-    // Skip weekends
-    while (date.getDay() === 0 || date.getDay() === 6) {
-      date.setDate(date.getDate() + 1);
-    }
-
-    const open = i === 0 ? entryPrice : priceData[priceData.length - 1].close;
-    const close = price;
-    const high = Math.max(open, close) + Math.abs(noise) * 0.3;
-    const low = Math.min(open, close) - Math.abs(noise) * 0.3;
-
-    priceData.push({
-      time: date.toISOString().split('T')[0],
-      open: Math.round(open * 100) / 100,
-      high: Math.round(high * 100) / 100,
-      low: Math.round(low * 100) / 100,
-      close: Math.round(close * 100) / 100,
-    });
+  // If no OHLC data for this ticker, show a message
+  if (!tickerData || tickerData.length === 0) {
+    container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-dim);">No historical data available for ' + baseTicker + '</div>';
+    macdContainer.style.display = 'none';
+    return;
   }
 
-  // Deduplicate dates
-  const seen = new Set();
-  const uniqueData = [];
-  for (const d of priceData) {
-    if (!seen.has(d.time)) {
-      seen.add(d.time);
-      uniqueData.push(d);
-    }
-  }
-  // Fix first candle to match entry, last to match exit
-  if (uniqueData.length > 0) {
-    uniqueData[0].open = entryPrice;
-    uniqueData[0].low = Math.min(uniqueData[0].low, entryPrice);
-    uniqueData[0].high = Math.max(uniqueData[0].high, entryPrice);
-    const last = uniqueData[uniqueData.length - 1];
-    last.close = exitPrice;
-    last.low = Math.min(last.low, exitPrice);
-    last.high = Math.max(last.high, exitPrice);
+  // Find the entry date index in the OHLC data
+  const entryIdx = tickerData.findIndex(d => d.t >= trade.date);
+  if (entryIdx === -1) {
+    container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-dim);">Trade date not found in OHLC data for ' + baseTicker + '</div>';
+    macdContainer.style.display = 'none';
+    return;
   }
 
+  // We need extra data before the visible window for EMA calculation (200 period lead-in)
+  const calcStart = Math.max(0, entryIdx - CANDLES_BEFORE - 200);
+  const visibleStart = Math.max(0, entryIdx - CANDLES_BEFORE);
+  const end = Math.min(tickerData.length, entryIdx + CANDLES_AFTER + 1);
+  const calcSlice = tickerData.slice(calcStart, end);
+  const visibleOffset = visibleStart - calcStart;
+
+  // Prepare OHLC data for the chart (only the visible portion)
+  const candleData = [];
+  for (let i = visibleOffset; i < calcSlice.length; i++) {
+    const d = calcSlice[i];
+    candleData.push({ time: d.t, open: d.o, high: d.h, low: d.l, close: d.c });
+  }
+
+  // Calculate all closes from calcStart for accurate EMAs
+  const allCloses = calcSlice.map(d => d.c);
+
+  // --- Main candlestick chart ---
+  tradeChart = LightweightCharts.createChart(container, CHART_OPTS);
   tradeSeries = tradeChart.addCandlestickSeries({
-    upColor: '#22c55e',
-    downColor: '#ef4444',
-    borderUpColor: '#22c55e',
-    borderDownColor: '#ef4444',
-    wickUpColor: '#22c55e',
-    wickDownColor: '#ef4444',
+    upColor: '#22c55e', downColor: '#ef4444',
+    borderUpColor: '#22c55e', borderDownColor: '#ef4444',
+    wickUpColor: '#22c55e', wickDownColor: '#ef4444',
   });
-  tradeSeries.setData(uniqueData);
+  tradeSeries.setData(candleData);
 
-  // Entry and exit markers
+  // --- EMA lines ---
+  for (const [key, cfg] of Object.entries(EMA_CONFIG)) {
+    const emaValues = calcEMA(allCloses, cfg.period);
+    const emaData = [];
+    for (let i = visibleOffset; i < calcSlice.length; i++) {
+      if (emaValues[i] !== null) {
+        emaData.push({ time: calcSlice[i].t, value: Math.round(emaValues[i] * 100) / 100 });
+      }
+    }
+    const series = tradeChart.addLineSeries({
+      color: cfg.color, lineWidth: 1, priceLineVisible: false,
+      lastValueVisible: false, crosshairMarkerVisible: false,
+      visible: indicatorState[key],
+      title: cfg.label,
+    });
+    series.setData(emaData);
+    tradeEmaSeries[key] = series;
+  }
+
+  // --- Entry/exit markers ---
+  // Find the closest candle dates for entry and exit
+  const entryCandle = candleData[0]; // first visible candle is close to entry
+  const entryMarkerDate = candleData.find(d => d.time >= trade.date)?.time || candleData[0].time;
+  // For exit, estimate: we don't have the exact exit date, so use entry date as marker
+  // The entry and exit happen on the same symbol; mark entry on trade date
   const markers = [
     {
-      time: uniqueData[0].time,
-      position: 'belowBar',
-      color: '#3b82f6',
-      shape: 'arrowUp',
+      time: entryMarkerDate,
+      position: 'belowBar', color: '#3b82f6', shape: 'arrowUp',
       text: `Entry $${entryPrice.toFixed(2)}`,
-    },
-    {
-      time: uniqueData[uniqueData.length - 1].time,
-      position: 'aboveBar',
-      color: isWin ? '#22c55e' : '#ef4444',
-      shape: 'arrowDown',
-      text: `Exit $${exitPrice.toFixed(2)}`,
     },
   ];
   tradeSeries.setMarkers(markers);
 
   // Entry and exit price lines
   tradeSeries.createPriceLine({
-    price: entryPrice,
-    color: '#3b82f6',
-    lineWidth: 1,
-    lineStyle: LightweightCharts.LineStyle.Dashed,
-    axisLabelVisible: true,
-    title: 'Entry',
+    price: entryPrice, color: '#3b82f6', lineWidth: 1,
+    lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: 'Entry',
   });
   tradeSeries.createPriceLine({
-    price: exitPrice,
-    color: isWin ? '#22c55e' : '#ef4444',
-    lineWidth: 1,
-    lineStyle: LightweightCharts.LineStyle.Dashed,
-    axisLabelVisible: true,
-    title: 'Exit',
+    price: exitPrice, color: isWin ? '#22c55e' : '#ef4444', lineWidth: 1,
+    lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: 'Exit',
   });
 
   tradeChart.timeScale().fitContent();
+
+  // --- MACD chart ---
+  macdContainer.style.display = indicatorState.macd ? 'block' : 'none';
+  macdChart = LightweightCharts.createChart(macdContainer, {
+    ...CHART_OPTS,
+    rightPriceScale: { borderColor: '#2a2e3d', scaleMargins: { top: 0.1, bottom: 0.1 } },
+  });
+
+  const macdResult = calcMACD(allCloses, 12, 26, 9);
+
+  // MACD histogram
+  const histData = [];
+  for (let i = visibleOffset; i < calcSlice.length; i++) {
+    if (macdResult.histogram[i] !== null) {
+      histData.push({
+        time: calcSlice[i].t,
+        value: Math.round(macdResult.histogram[i] * 10000) / 10000,
+        color: macdResult.histogram[i] >= 0 ? 'rgba(34,197,94,0.6)' : 'rgba(239,68,68,0.6)',
+      });
+    }
+  }
+  macdHistSeries = macdChart.addHistogramSeries({
+    priceLineVisible: false, lastValueVisible: false,
+  });
+  macdHistSeries.setData(histData);
+
+  // MACD line
+  const macdLineData = [];
+  for (let i = visibleOffset; i < calcSlice.length; i++) {
+    if (macdResult.macd[i] !== null) {
+      macdLineData.push({ time: calcSlice[i].t, value: Math.round(macdResult.macd[i] * 10000) / 10000 });
+    }
+  }
+  macdLineSeries = macdChart.addLineSeries({
+    color: '#06b6d4', lineWidth: 2, priceLineVisible: false, lastValueVisible: false, title: 'MACD',
+  });
+  macdLineSeries.setData(macdLineData);
+
+  // Signal line
+  const signalData = [];
+  for (let i = visibleOffset; i < calcSlice.length; i++) {
+    if (macdResult.signal[i] !== null) {
+      signalData.push({ time: calcSlice[i].t, value: Math.round(macdResult.signal[i] * 10000) / 10000 });
+    }
+  }
+  macdSignalSeries = macdChart.addLineSeries({
+    color: '#f97316', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: 'Signal',
+    lineStyle: LightweightCharts.LineStyle.Dashed,
+  });
+  macdSignalSeries.setData(signalData);
+
+  // Zero line for MACD
+  macdHistSeries.createPriceLine({
+    price: 0, color: '#4b5563', lineWidth: 1,
+    lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: false,
+  });
+
+  macdChart.timeScale().fitContent();
+
+  // Sync crosshairs between trade chart and MACD chart
+  tradeChart.subscribeCrosshairMove(param => {
+    if (param.time) macdChart.setCrosshairPosition(0, param.time, macdHistSeries);
+    else macdChart.clearCrosshairPosition();
+  });
+  macdChart.subscribeCrosshairMove(param => {
+    if (param.time) tradeChart.setCrosshairPosition(0, param.time, tradeSeries);
+    else tradeChart.clearCrosshairPosition();
+  });
+
+  // Sync time scale scrolling
+  tradeChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+    if (range) macdChart.timeScale().setVisibleLogicalRange(range);
+  });
+  macdChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+    if (range) tradeChart.timeScale().setVisibleLogicalRange(range);
+  });
 }
 
 function renderTable() {
   const trades = getTrades();
   let filtered = [...trades];
+  if (searchTerm) filtered = filtered.filter(t => t.symbol.toLowerCase().includes(searchTerm));
+  if (tableColorFilter !== 'all') filtered = filtered.filter(t => t.regimeColor === tableColorFilter);
+  if (tableTypeFilter !== 'all') filtered = filtered.filter(t => t.type === tableTypeFilter);
 
-  if (searchTerm) {
-    filtered = filtered.filter(t => t.symbol.toLowerCase().includes(searchTerm));
-  }
-  if (tableColorFilter !== 'all') {
-    filtered = filtered.filter(t => t.regimeColor === tableColorFilter);
-  }
-  if (tableTypeFilter !== 'all') {
-    filtered = filtered.filter(t => t.type === tableTypeFilter);
-  }
-
-  // Sort
   filtered.sort((a, b) => {
     let va = a[sortField], vb = b[sortField];
     if (typeof va === 'string') return va.localeCompare(vb) * sortDir;
@@ -804,9 +916,8 @@ function renderTable() {
   const start = (currentPage - 1) * PAGE_SIZE;
   const pageItems = filtered.slice(start, start + PAGE_SIZE);
 
-  const tbody = document.getElementById('trades-tbody');
-  tbody.innerHTML = pageItems.map(t => `
-    <tr onclick="showTradeDetail('${t.symbol.replace(/'/g, "\\'")}', '${t.date}', '${t.regimeColor}')" class="${selectedTradeIdx === t.symbol + t.date ? 'selected-row' : ''}">
+  document.getElementById('trades-tbody').innerHTML = pageItems.map(t => `
+    <tr onclick="showTradeDetail('${t.symbol.replace(/'/g, "\\'")}', '${t.date}', '${t.regimeColor}')">
       <td>${t.date}</td>
       <td style="font-weight:600;">${t.symbol}</td>
       <td>${t.side}</td>
@@ -820,16 +931,12 @@ function renderTable() {
     </tr>
   `).join('');
 
-  // Pagination
   const pag = document.getElementById('pagination');
   if (totalPages <= 1) { pag.innerHTML = ''; return; }
-
   let pagHtml = `<button class="page-btn" onclick="goPage(${Math.max(1, currentPage - 1)})">&laquo;</button>`;
-  const maxShow = 7;
   let startPage = Math.max(1, currentPage - 3);
-  let endPage = Math.min(totalPages, startPage + maxShow - 1);
-  if (endPage - startPage < maxShow - 1) startPage = Math.max(1, endPage - maxShow + 1);
-
+  let endPage = Math.min(totalPages, startPage + 6);
+  if (endPage - startPage < 6) startPage = Math.max(1, endPage - 6);
   for (let p = startPage; p <= endPage; p++) {
     pagHtml += `<button class="page-btn ${p === currentPage ? 'active' : ''}" onclick="goPage(${p})">${p}</button>`;
   }
@@ -838,19 +945,16 @@ function renderTable() {
   pag.innerHTML = pagHtml;
 }
 
-function goPage(p) {
-  currentPage = p;
-  renderTable();
-}
+function goPage(p) { currentPage = p; renderTable(); }
 
 // Handle chart resize
 window.addEventListener('resize', () => {
   if (equityChart) equityChart.applyOptions({ width: document.getElementById('equity-chart').clientWidth });
   if (drawdownChart) drawdownChart.applyOptions({ width: document.getElementById('drawdown-chart').clientWidth });
   if (tradeChart) tradeChart.applyOptions({ width: document.getElementById('trade-chart').clientWidth });
+  if (macdChart) macdChart.applyOptions({ width: document.getElementById('macd-chart').clientWidth });
 });
 
-// ResizeObserver for chart containers
 new ResizeObserver(() => {
   if (equityChart) equityChart.applyOptions({ width: document.getElementById('equity-chart').clientWidth });
 }).observe(document.getElementById('equity-chart'));
