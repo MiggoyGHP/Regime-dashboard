@@ -804,18 +804,20 @@ function renderPerformers() {
 function renderPerformerList(containerId, items, type) {
   const container = document.getElementById(containerId);
   container.innerHTML = items.map((t, i) => {
-    const pctChange = t.entry > 0 ? ((t.exit - t.entry) / t.entry * 100) : 0;
+    const isOpt = t.type === 'Equity and Index Options';
+    const pctChange = (!isOpt && t.entry > 0) ? ((t.exit - t.entry) / t.entry * 100) : null;
     const isTop = type === 'top';
+    const strategyTag = t.strategy ? `<span style="color:var(--text-dim);font-size:11px;"> (${t.strategy})</span>` : '';
     return `
       <div class="performer-item" onclick="showTradeDetail(${t.tradeId})">
         <div class="performer-rank ${isTop ? 'top-rank' : 'bottom-rank'}">${i + 1}</div>
         <div class="performer-info">
-          <div class="performer-symbol">${t.symbol}</div>
+          <div class="performer-symbol">${t.symbol}${strategyTag}</div>
           <div class="performer-date">${t.entryDate} &rarr; ${t.exitDate} · ${t.side} · <span class="regime-badge badge-${t.regimeColor}">${t.regimeColor}</span></div>
         </div>
         <div style="text-align:right;">
           <div class="performer-pnl ${t.pnl >= 0 ? 'positive' : 'negative'}">${fmtPnL(t.pnl)}</div>
-          <div style="font-size:11px; color:var(--text-dim);">${pctChange >= 0 ? '+' : ''}${pctChange.toFixed(1)}%</div>
+          <div style="font-size:11px; color:var(--text-dim);">${pctChange !== null ? `${pctChange >= 0 ? '+' : ''}${pctChange.toFixed(1)}%` : (t.strategy || 'Options')}</div>
         </div>
       </div>`;
   }).join('');
@@ -837,16 +839,18 @@ function showTradeDetail(tradeId) {
 
   const holdDays = calcHoldingDays(trade.entryDate, trade.exitDate);
   document.getElementById('trade-detail-title').textContent = `${trade.symbol} — Trade Detail`;
-  const pctChange = trade.entry > 0 ? ((trade.exit - trade.entry) / trade.entry * 100) : 0;
+  const isOptions = trade.type === 'Equity and Index Options';
+  const pctChange = (!isOptions && trade.entry > 0) ? ((trade.exit - trade.entry) / trade.entry * 100) : null;
+  const typeLabel = trade.strategy || (isOptions ? 'Options' : trade.type);
   document.getElementById('trade-detail-meta').innerHTML = `
     <span class="trade-meta-item"><span class="dot" style="background:${regimeColorToHex(trade.regimeColor)}"></span> ${trade.regimeColor}</span>
     <span class="trade-meta-item">${trade.entryDate} &rarr; ${trade.exitDate} (${holdDays}d)</span>
-    <span class="trade-meta-item">${trade.side} · ${trade.type === 'Equity and Index Options' ? 'Options' : trade.type}</span>
+    <span class="trade-meta-item">${trade.side} · ${typeLabel}</span>
     <span class="trade-meta-item">Qty: ${fmt(trade.qty)}</span>
-    <span class="trade-meta-item">Entry: $${trade.entry.toFixed(2)}</span>
-    <span class="trade-meta-item">Exit: $${trade.exit.toFixed(2)}</span>
+    <span class="trade-meta-item">${isOptions ? 'Premium' : 'Entry'}: $${trade.entry.toFixed(2)}</span>
+    <span class="trade-meta-item">${isOptions ? 'Close' : 'Exit'}: $${trade.exit.toFixed(2)}</span>
     <span class="trade-meta-item ${trade.pnl >= 0 ? 'positive' : 'negative'}">P&L: ${fmtPnL(trade.pnl)}</span>
-    <span class="trade-meta-item">${pctChange >= 0 ? '+' : ''}${pctChange.toFixed(2)}%</span>
+    ${pctChange !== null ? `<span class="trade-meta-item">${pctChange >= 0 ? '+' : ''}${pctChange.toFixed(2)}%</span>` : ''}
     <span class="trade-meta-item">Fees: $${Math.abs(trade.fees).toFixed(2)}</span>
   `;
   renderTradeChart(trade);
@@ -934,6 +938,7 @@ function renderTradeChart(trade) {
   }
 
   // --- Entry/exit markers ---
+  const isOptions = trade.type === 'Equity and Index Options';
   const entryMarkerDate = candleData.find(d => d.time >= trade.entryDate)?.time || candleData[0].time;
   const exitMarkerDate = candleData.find(d => d.time >= trade.exitDate)?.time || candleData[candleData.length - 1].time;
 
@@ -941,27 +946,29 @@ function renderTradeChart(trade) {
     {
       time: entryMarkerDate,
       position: 'belowBar', color: '#3b82f6', shape: 'arrowUp',
-      text: `Entry $${entryPrice.toFixed(2)}`,
+      text: isOptions ? 'Entry' : `Entry $${entryPrice.toFixed(2)}`,
     },
     {
       time: exitMarkerDate,
       position: 'aboveBar', color: isWin ? '#22c55e' : '#ef4444', shape: 'arrowDown',
-      text: `Exit $${exitPrice.toFixed(2)}`,
+      text: isOptions ? `Exit ${fmtPnL(trade.pnl)}` : `Exit $${exitPrice.toFixed(2)}`,
     },
   ];
   // LWC requires markers sorted by time
   markers.sort((a, b) => a.time < b.time ? -1 : a.time > b.time ? 1 : 0);
   tradeSeries.setMarkers(markers);
 
-  // Entry and exit price lines
-  tradeSeries.createPriceLine({
-    price: entryPrice, color: '#3b82f6', lineWidth: 1,
-    lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: 'Entry',
-  });
-  tradeSeries.createPriceLine({
-    price: exitPrice, color: isWin ? '#22c55e' : '#ef4444', lineWidth: 1,
-    lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: 'Exit',
-  });
+  // Entry and exit price lines (skip for options — option prices don't map to stock chart)
+  if (!isOptions) {
+    tradeSeries.createPriceLine({
+      price: entryPrice, color: '#3b82f6', lineWidth: 1,
+      lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: 'Entry',
+    });
+    tradeSeries.createPriceLine({
+      price: exitPrice, color: isWin ? '#22c55e' : '#ef4444', lineWidth: 1,
+      lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: 'Exit',
+    });
+  }
 
   tradeChart.timeScale().fitContent();
 
@@ -1045,7 +1052,7 @@ function renderTradeChart(trade) {
 function renderTable() {
   const trades = getTrades();
   let filtered = [...trades];
-  if (searchTerm) filtered = filtered.filter(t => t.symbol.toLowerCase().includes(searchTerm));
+  if (searchTerm) filtered = filtered.filter(t => t.symbol.toLowerCase().includes(searchTerm) || (t.strategy && t.strategy.toLowerCase().includes(searchTerm)));
   if (tableColorFilter !== 'all') filtered = filtered.filter(t => t.regimeColor === tableColorFilter);
   if (tableTypeFilter !== 'all') filtered = filtered.filter(t => t.type === tableTypeFilter);
 
@@ -1065,7 +1072,7 @@ function renderTable() {
       <td>${t.exitDate}</td>
       <td style="font-weight:600;">${t.symbol}</td>
       <td>${t.side}</td>
-      <td style="font-size:12px;">${t.type === 'Equity and Index Options' ? 'Options' : t.type}</td>
+      <td style="font-size:12px;">${t.strategy || (t.type === 'Equity and Index Options' ? 'Options' : t.type)}</td>
       <td>${fmt(t.qty)}</td>
       <td>$${t.entry.toFixed(2)}</td>
       <td>$${t.exit.toFixed(2)}</td>

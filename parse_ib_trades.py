@@ -43,6 +43,7 @@ class RoundTrip:
     pnl: float
     fees: float
     status: str
+    strategy: str = ''
 
 # ── CSV Parsing ───────────────────────────────────────────────────────────────
 
@@ -218,6 +219,181 @@ def group_round_trips(executions):
 
     return trips
 
+# ── Options Combo Detection ──────────────────────────────────────────────────
+
+def parse_option_symbol(symbol):
+    """Parse 'AAPL 16FEB24 180 P' → (underlying, expiry, strike, opt_type) or None."""
+    parts = symbol.strip().split()
+    if len(parts) >= 4:
+        try:
+            strike = float(parts[2])
+            return (parts[0], parts[1], strike, parts[3])
+        except ValueError:
+            return None
+    return None
+
+
+def fmt_strike(strike):
+    """Format strike: 5130.0 → '5130', 72.5 → '72.5'."""
+    return str(int(strike)) if strike == int(strike) else str(strike)
+
+
+def identify_strategy(legs):
+    """Identify the options strategy from grouped legs."""
+    calls = [l for l in legs if l['opt_type'] == 'C']
+    puts = [l for l in legs if l['opt_type'] == 'P']
+    buys = [l for l in legs if l['trade'].side == 'Buy']
+    sells = [l for l in legs if l['trade'].side == 'Sell']
+    n = len(legs)
+
+    if n == 4 and len(calls) == 2 and len(puts) == 2:
+        return 'Iron Condor'
+    elif n == 2 and len(buys) == 1 and len(sells) == 1:
+        if len(calls) == 2:
+            sell_strike = [l['strike'] for l in legs if l['trade'].side == 'Sell'][0]
+            buy_strike = [l['strike'] for l in legs if l['trade'].side == 'Buy'][0]
+            return 'Bear Call Spread' if sell_strike < buy_strike else 'Bull Call Spread'
+        elif len(puts) == 2:
+            sell_strike = [l['strike'] for l in legs if l['trade'].side == 'Sell'][0]
+            buy_strike = [l['strike'] for l in legs if l['trade'].side == 'Buy'][0]
+            return 'Bull Put Spread' if sell_strike > buy_strike else 'Bear Put Spread'
+    return f'{n}-Leg Combo'
+
+
+def build_combo_symbol(underlying, expiry, strategy, legs):
+    """Build a descriptive symbol for a combo trade."""
+    if strategy == 'Iron Condor':
+        calls = sorted([l for l in legs if l['opt_type'] == 'C'], key=lambda l: l['strike'])
+        puts = sorted([l for l in legs if l['opt_type'] == 'P'], key=lambda l: l['strike'])
+        return (f"{underlying} IC "
+                f"{fmt_strike(calls[0]['strike'])}/{fmt_strike(calls[1]['strike'])}C "
+                f"{fmt_strike(puts[0]['strike'])}/{fmt_strike(puts[1]['strike'])}P "
+                f"{expiry}")
+    elif 'Call Spread' in strategy:
+        strikes = sorted([l['strike'] for l in legs])
+        abbr = 'BCS' if strategy == 'Bear Call Spread' else 'BullCS'
+        return f"{underlying} {abbr} {fmt_strike(strikes[0])}/{fmt_strike(strikes[1])}C {expiry}"
+    elif 'Put Spread' in strategy:
+        strikes = sorted([l['strike'] for l in legs])
+        abbr = 'BPS' if strategy == 'Bull Put Spread' else 'BearPS'
+        return f"{underlying} {abbr} {fmt_strike(strikes[0])}/{fmt_strike(strikes[1])}P {expiry}"
+    else:
+        return f"{underlying} {strategy} {expiry}"
+
+
+def detect_and_merge_combos(trades):
+    """Post-process round trips to detect and merge multi-leg option combos."""
+    stock_trades = []
+    option_trades = []
+
+    for t in trades:
+        if t.asset_category == 'Equity and Index Options':
+            option_trades.append(t)
+        else:
+            stock_trades.append(t)
+
+    if not option_trades:
+        return trades
+
+    # Parse option info for each leg
+    option_info = []
+    unparseable = []
+    for t in option_trades:
+        parsed = parse_option_symbol(t.symbol)
+        if parsed:
+            underlying, expiry, strike, opt_type = parsed
+            option_info.append({
+                'trade': t,
+                'underlying': underlying,
+                'expiry': expiry,
+                'strike': strike,
+                'opt_type': opt_type,
+            })
+        else:
+            unparseable.append(t)
+
+    # Group by (underlying, expiry, entry_date)
+    groups = defaultdict(list)
+    for info in option_info:
+        key = (info['underlying'], info['expiry'], info['trade'].entry_date)
+        groups[key].append(info)
+
+    merged_trades = list(stock_trades) + unparseable
+    combo_count = 0
+
+    for key, legs in groups.items():
+        underlying, expiry, entry_date = key
+
+        if len(legs) < 2:
+            # Single-leg option: assign strategy name
+            leg = legs[0]
+            t = leg['trade']
+            opt_label = 'Call' if leg['opt_type'] == 'C' else 'Put'
+            t.strategy = f"Long {opt_label}" if t.side == 'Buy' else f"Short {opt_label}"
+            merged_trades.append(t)
+            continue
+
+        # Check for mixed directions (both buy and sell) → combo
+        sides = set(l['trade'].side for l in legs)
+        if len(sides) < 2:
+            # All same direction = not a combo, keep individual legs
+            for l in legs:
+                t = l['trade']
+                opt_label = 'Call' if l['opt_type'] == 'C' else 'Put'
+                t.strategy = f"Long {opt_label}" if t.side == 'Buy' else f"Short {opt_label}"
+                merged_trades.append(t)
+            continue
+
+        # ── This is a combo! ──
+        strategy = identify_strategy(legs)
+        combo_symbol = build_combo_symbol(underlying, expiry, strategy, legs)
+
+        # Combined metrics
+        total_pnl = sum(l['trade'].pnl for l in legs)
+        total_fees = sum(l['trade'].fees for l in legs)
+        combo_entry_date = min(l['trade'].entry_date for l in legs)
+        combo_exit_date = max(l['trade'].exit_date for l in legs)
+        qty = min(l['trade'].quantity for l in legs)
+
+        # Net entry/exit price per unit
+        # Sell legs contribute +price (premium received), buy legs contribute -price (premium paid)
+        net_entry = 0
+        net_exit = 0
+        for l in legs:
+            t = l['trade']
+            if t.side == 'Sell':
+                net_entry += t.entry_price
+                net_exit += t.exit_price
+            else:
+                net_entry -= t.entry_price
+                net_exit -= t.exit_price
+
+        combo_side = 'Sell' if net_entry > 0 else 'Buy'
+
+        combo = RoundTrip(
+            symbol=combo_symbol,
+            asset_category='Equity and Index Options',
+            side=combo_side,
+            entry_date=combo_entry_date,
+            exit_date=combo_exit_date,
+            quantity=round(qty, 4),
+            entry_price=round(abs(net_entry), 6),
+            exit_price=round(abs(net_exit), 6),
+            pnl=round(total_pnl, 2),
+            fees=round(total_fees, 2),
+            status='Closed' if all(l['trade'].status == 'Closed' for l in legs) else 'Open',
+            strategy=strategy,
+        )
+
+        merged_trades.append(combo)
+        combo_count += 1
+        print(f'  COMBO: {combo_symbol} ({strategy}) → P&L: ${total_pnl:,.2f}')
+
+    single_opts = len([t for t in merged_trades if t.asset_category == 'Equity and Index Options' and not t.strategy.startswith(('Iron', 'Bear', 'Bull'))])
+    print(f'\nOptions combo detection: {combo_count} combos merged, {single_opts} single-leg options kept')
+    return merged_trades
+
+
 # ── Regime Color Assignment ───────────────────────────────────────────────────
 
 def get_regime_color(date_str, periods):
@@ -247,6 +423,7 @@ def assign_regime_colors(trades, all_regime_periods):
                 'pnl': t.pnl,
                 'fees': t.fees,
                 'status': t.status,
+                'strategy': t.strategy,
                 'regimeColor': get_regime_color(t.exit_date, periods),
             }
             regime_trades.append(trade_dict)
@@ -341,15 +518,21 @@ def main():
 
     # 2. Group into round-trip trades
     trades = group_round_trips(all_executions)
+
+    # 2b. Detect and merge option combos
+    print(f'\nPre-combo round trips: {len(trades)}')
+    trades = detect_and_merge_combos(trades)
     trades.sort(key=lambda t: (t.exit_date, t.entry_date, t.symbol))
 
     closed = [t for t in trades if t.status == 'Closed']
     opened = [t for t in trades if t.status == 'Open']
     stocks = [t for t in closed if t.asset_category == 'Stocks']
     options = [t for t in closed if t.asset_category != 'Stocks']
+    combos = [t for t in options if t.strategy in ('Iron Condor', 'Bear Call Spread', 'Bull Put Spread', 'Bull Call Spread', 'Bear Put Spread')]
+    single_opts = [t for t in options if t not in combos]
 
     print(f'\nRound-trip trades: {len(trades)} ({len(closed)} closed, {len(opened)} open)')
-    print(f'  Stocks: {len(stocks)}, Options: {len(options)}')
+    print(f'  Stocks: {len(stocks)}, Options: {len(options)} ({len(combos)} combos, {len(single_opts)} single-leg)')
 
     total_pnl = sum(t.pnl for t in closed)
     print(f'  Total P&L (closed): ${total_pnl:,.2f}')
