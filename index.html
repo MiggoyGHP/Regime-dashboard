@@ -269,6 +269,12 @@
   <!-- Equity Curve Chart -->
   <div class="chart-section">
     <h2>Equity Curve</h2>
+    <div class="indicator-toggles" id="equity-toggles">
+      <span class="toggle-label">Regimes:</span>
+      <div class="indicator-toggle active" data-eq-color="Green" style="color:#22c55e; border-color:#22c55e; background:rgba(34,197,94,0.1);">Green</div>
+      <div class="indicator-toggle active" data-eq-color="Yellow" style="color:#eab308; border-color:#eab308; background:rgba(234,179,8,0.1);">Yellow</div>
+      <div class="indicator-toggle active" data-eq-color="Red" style="color:#ef4444; border-color:#ef4444; background:rgba(239,68,68,0.1);">Red</div>
+    </div>
     <div id="equity-chart"></div>
   </div>
 
@@ -362,7 +368,9 @@ let OHLC = null;
 let currentRegime = 1;
 let currentColorFilter = 'all';
 let selectedTradeIdx = null;
-let equityChart, equitySeries;
+let equityChart, equityLineSeries, equityBandSeries = {};
+let drawdownBandSeries = {};
+let equityColorState = { Green: true, Yellow: true, Red: true };
 let drawdownChart, drawdownSeries;
 let tradeChart, tradeSeries, macdChart;
 let tradeEmaSeries = {};
@@ -404,8 +412,10 @@ function init() {
   setupRegimeButtons();
   setupColorFilter();
   setupIndicatorToggles();
+  setupEquityToggles();
   createEquityChart();
   createDrawdownChart();
+  syncEquityDrawdown();
   setupTableControls();
   render();
 }
@@ -443,7 +453,7 @@ function setupColorFilter() {
 }
 
 function setupIndicatorToggles() {
-  document.querySelectorAll('.indicator-toggle').forEach(btn => {
+  document.querySelectorAll('.indicator-toggle[data-indicator]').forEach(btn => {
     btn.addEventListener('click', () => {
       const ind = btn.dataset.indicator;
       indicatorState[ind] = !indicatorState[ind];
@@ -451,6 +461,26 @@ function setupIndicatorToggles() {
       applyIndicatorVisibility();
     });
   });
+}
+
+function setupEquityToggles() {
+  document.querySelectorAll('.indicator-toggle[data-eq-color]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const color = btn.dataset.eqColor;
+      equityColorState[color] = !equityColorState[color];
+      btn.classList.toggle('active', equityColorState[color]);
+      applyEquityVisibility();
+    });
+  });
+}
+
+function applyEquityVisibility() {
+  for (const [color, series] of Object.entries(equityBandSeries)) {
+    if (series) series.applyOptions({ visible: equityColorState[color] });
+  }
+  for (const [color, series] of Object.entries(drawdownBandSeries)) {
+    if (series) series.applyOptions({ visible: equityColorState[color] });
+  }
 }
 
 function applyIndicatorVisibility() {
@@ -638,25 +668,88 @@ function regimeColorToHex(color) {
 function createEquityChart() {
   const container = document.getElementById('equity-chart');
   equityChart = LightweightCharts.createChart(container, CHART_OPTS);
-  equitySeries = equityChart.addAreaSeries({
-    lineColor: '#3b82f6', topColor: 'rgba(59,130,246,0.3)',
-    bottomColor: 'rgba(59,130,246,0.02)', lineWidth: 2,
+  // Background regime bands (added first so they render behind the line)
+  const bandColors = {
+    Green:  { top: 'rgba(34,197,94,0.18)',  bottom: 'rgba(34,197,94,0.18)' },
+    Yellow: { top: 'rgba(234,179,8,0.18)',   bottom: 'rgba(234,179,8,0.18)' },
+    Red:    { top: 'rgba(239,68,68,0.18)',   bottom: 'rgba(239,68,68,0.18)' },
+  };
+  for (const [color, fill] of Object.entries(bandColors)) {
+    equityBandSeries[color] = equityChart.addAreaSeries({
+      lineWidth: 0, lineColor: 'transparent',
+      topColor: fill.top, bottomColor: fill.bottom,
+      lineType: 1, // WithSteps — sharp vertical transitions
+      priceScaleId: 'regime',
+      lastValueVisible: false, priceLineVisible: false,
+      crosshairMarkerVisible: false,
+    });
+  }
+  equityChart.priceScale('regime').applyOptions({
+    visible: false, scaleMargins: { top: 0, bottom: 0 },
   });
+  // Main equity line (on top)
+  equityLineSeries = equityChart.addLineSeries({
+    color: '#e1e4eb', lineWidth: 2,
+    lastValueVisible: true, priceLineVisible: false,
+  });
+}
+
+function getRegimeColorForDate(date, regimeKey) {
+  const periods = DATA.regimePeriods[regimeKey];
+  if (!periods) return 'Unknown';
+  for (const p of periods) {
+    if (date >= p.start && date <= p.end) return p.color;
+  }
+  return 'Unknown';
+}
+
+function buildRegimeBandData(dates, regimeKey) {
+  // For each color, build a step-function: value=1 when in that regime, 0 otherwise
+  const bands = { Green: [], Yellow: [], Red: [] };
+  for (let i = 0; i < dates.length; i++) {
+    const color = getRegimeColorForDate(dates[i], regimeKey);
+    for (const c of ['Green', 'Yellow', 'Red']) {
+      bands[c].push({ time: dates[i], value: color === c ? 1 : 0 });
+    }
+  }
+  return bands;
 }
 
 function renderEquityChart() {
   const ec = DATA.equityCurve;
-  equitySeries.setData(ec.map(e => ({ time: e.date, value: e.cumPnL })));
-  const markers = ec.filter((e, i) => i === 0 || e.regimeColor !== ec[i-1].regimeColor).map(e => ({
-    time: e.date, position: 'belowBar', color: regimeColorToHex(e.regimeColor), shape: 'circle', text: e.regimeColor,
-  }));
-  equitySeries.setMarkers(markers);
+  const regimeKey = 'regime' + currentRegime;
+  // Set equity line data
+  equityLineSeries.setData(ec.map(e => ({ time: e.date, value: e.cumPnL })));
+  // Set background band data
+  const bands = buildRegimeBandData(ec.map(e => e.date), regimeKey);
+  for (const color of ['Green', 'Yellow', 'Red']) {
+    equityBandSeries[color].setData(bands[color]);
+  }
   equityChart.timeScale().fitContent();
 }
 
 function createDrawdownChart() {
   const container = document.getElementById('drawdown-chart');
   drawdownChart = LightweightCharts.createChart(container, CHART_OPTS);
+  // Background regime bands for drawdown chart
+  const bandColors = {
+    Green:  { top: 'rgba(34,197,94,0.18)',  bottom: 'rgba(34,197,94,0.18)' },
+    Yellow: { top: 'rgba(234,179,8,0.18)',   bottom: 'rgba(234,179,8,0.18)' },
+    Red:    { top: 'rgba(239,68,68,0.18)',   bottom: 'rgba(239,68,68,0.18)' },
+  };
+  for (const [color, fill] of Object.entries(bandColors)) {
+    drawdownBandSeries[color] = drawdownChart.addAreaSeries({
+      lineWidth: 0, lineColor: 'transparent',
+      topColor: fill.top, bottomColor: fill.bottom,
+      lineType: 1, priceScaleId: 'regime',
+      lastValueVisible: false, priceLineVisible: false,
+      crosshairMarkerVisible: false,
+    });
+  }
+  drawdownChart.priceScale('regime').applyOptions({
+    visible: false, scaleMargins: { top: 0, bottom: 0 },
+  });
+  // Drawdown area series (on top)
   drawdownSeries = drawdownChart.addAreaSeries({
     lineColor: '#ef4444', topColor: 'rgba(239,68,68,0.05)',
     bottomColor: 'rgba(239,68,68,0.25)', lineWidth: 2, invertFilledArea: true,
@@ -665,8 +758,38 @@ function createDrawdownChart() {
 
 function renderDrawdownChart() {
   const ec = DATA.equityCurve;
+  const regimeKey = 'regime' + currentRegime;
   drawdownSeries.setData(ec.map(e => ({ time: e.date, value: e.drawdown })));
+  // Set drawdown background bands
+  const bands = buildRegimeBandData(ec.map(e => e.date), regimeKey);
+  for (const color of ['Green', 'Yellow', 'Red']) {
+    drawdownBandSeries[color].setData(bands[color]);
+  }
   drawdownChart.timeScale().fitContent();
+}
+
+function syncEquityDrawdown() {
+  let syncing = false;
+  equityChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+    if (syncing || !range) return;
+    syncing = true;
+    drawdownChart.timeScale().setVisibleLogicalRange(range);
+    syncing = false;
+  });
+  drawdownChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+    if (syncing || !range) return;
+    syncing = true;
+    equityChart.timeScale().setVisibleLogicalRange(range);
+    syncing = false;
+  });
+  equityChart.subscribeCrosshairMove(param => {
+    if (param.time) drawdownChart.setCrosshairPosition(0, param.time, drawdownSeries);
+    else drawdownChart.clearCrosshairPosition();
+  });
+  drawdownChart.subscribeCrosshairMove(param => {
+    if (param.time) equityChart.setCrosshairPosition(0, param.time, equityLineSeries);
+    else equityChart.clearCrosshairPosition();
+  });
 }
 
 function renderPerformers() {
