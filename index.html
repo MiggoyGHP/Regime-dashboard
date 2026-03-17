@@ -274,6 +274,12 @@
       <div class="indicator-toggle active" data-eq-color="Green" style="color:#22c55e; border-color:#22c55e; background:rgba(34,197,94,0.1);">Green</div>
       <div class="indicator-toggle active" data-eq-color="Yellow" style="color:#eab308; border-color:#eab308; background:rgba(234,179,8,0.1);">Yellow</div>
       <div class="indicator-toggle active" data-eq-color="Red" style="color:#ef4444; border-color:#ef4444; background:rgba(239,68,68,0.1);">Red</div>
+      <div class="toggle-separator"></div>
+      <span class="toggle-label">Overlays:</span>
+      <div class="indicator-toggle active" data-overlay="equity" style="color:#e1e4eb; border-color:#e1e4eb; background:rgba(225,228,235,0.1);">Equity</div>
+      <div class="indicator-toggle" data-overlay="spx" style="color:#3b82f6; border-color:#3b82f6; background:rgba(59,130,246,0.1);">SPX</div>
+      <div class="indicator-toggle" data-overlay="vix" style="color:#f97316; border-color:#f97316; background:rgba(249,115,22,0.1);">VIX</div>
+      <div class="indicator-toggle" data-overlay="mmth" style="color:#a855f7; border-color:#a855f7; background:rgba(168,85,247,0.1);">MMTH</div>
     </div>
     <div id="equity-chart"></div>
   </div>
@@ -372,6 +378,8 @@ let selectedTradeIdx = null;
 let equityChart, equityLineSeries, equityBandSeries = {};
 let drawdownBandSeries = {};
 let equityColorState = { Green: true, Yellow: true, Red: true };
+let overlayState = { equity: true, spx: false, vix: false, mmth: false };
+let overlaySeries = {};
 let drawdownChart, drawdownSeries;
 let tradeChart, tradeSeries, macdChart;
 let tradeEmaSeries = {};
@@ -394,6 +402,12 @@ const EMA_CONFIG = {
   ema200: { period: 200, color: '#ef4444', label: '200 EMA' },
 };
 
+const OVERLAY_CONFIG = {
+  spx:  { color: '#3b82f6', lineWidth: 1.5, priceScaleId: 'spx',  label: 'SPX'  },
+  vix:  { color: '#f97316', lineWidth: 1.5, priceScaleId: 'vix',  label: 'VIX'  },
+  mmth: { color: '#a855f7', lineWidth: 1.5, priceScaleId: 'mmth', label: 'MMTH' },
+};
+
 const CHART_OPTS = {
   layout: { background: { color: '#1a1d29' }, textColor: '#8b8fa3' },
   grid: { vertLines: { color: '#2a2e3d' }, horzLines: { color: '#2a2e3d' } },
@@ -414,6 +428,7 @@ function init() {
   setupColorFilter();
   setupIndicatorToggles();
   setupEquityToggles();
+  setupOverlayToggles();
   createEquityChart();
   createDrawdownChart();
   syncEquityDrawdown();
@@ -481,6 +496,24 @@ function applyEquityVisibility() {
   }
   for (const [color, series] of Object.entries(drawdownBandSeries)) {
     if (series) series.applyOptions({ visible: equityColorState[color] });
+  }
+}
+
+function setupOverlayToggles() {
+  document.querySelectorAll('.indicator-toggle[data-overlay]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = btn.dataset.overlay;
+      overlayState[key] = !overlayState[key];
+      btn.classList.toggle('active', overlayState[key]);
+      applyOverlayVisibility();
+    });
+  });
+}
+
+function applyOverlayVisibility() {
+  if (equityLineSeries) equityLineSeries.applyOptions({ visible: overlayState.equity });
+  for (const [key, series] of Object.entries(overlaySeries)) {
+    if (series) series.applyOptions({ visible: overlayState[key] });
   }
 }
 
@@ -693,6 +726,17 @@ function createEquityChart() {
     color: '#e1e4eb', lineWidth: 2,
     lastValueVisible: true, priceLineVisible: false,
   });
+  // Overlay line series (SPX, VIX, MMTH) — each on its own hidden price scale
+  for (const [key, cfg] of Object.entries(OVERLAY_CONFIG)) {
+    overlaySeries[key] = equityChart.addLineSeries({
+      color: cfg.color, lineWidth: cfg.lineWidth, priceScaleId: cfg.priceScaleId,
+      lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false,
+      visible: overlayState[key], title: cfg.label,
+    });
+    equityChart.priceScale(cfg.priceScaleId).applyOptions({
+      visible: false, scaleMargins: { top: 0.05, bottom: 0.05 },
+    });
+  }
 }
 
 function getRegimeColorForDate(date, regimeKey) {
@@ -731,6 +775,11 @@ function renderEquityChart() {
   const bands = buildRegimeBandData(ec.map(e => e.date), regimeKey);
   for (const color of ['Green', 'Yellow', 'Red']) {
     equityBandSeries[color].setData(bands[color]);
+  }
+  // Set overlay data (SPX, VIX, MMTH)
+  const overlays = DATA.overlays || {};
+  for (const key of Object.keys(OVERLAY_CONFIG)) {
+    if (overlays[key] && overlaySeries[key]) overlaySeries[key].setData(overlays[key]);
   }
   equityChart.timeScale().fitContent();
 }
