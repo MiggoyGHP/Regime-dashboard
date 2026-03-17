@@ -343,7 +343,8 @@
       <table>
         <thead>
           <tr>
-            <th data-sort="date">Date</th>
+            <th data-sort="entryDate">Entry</th>
+            <th data-sort="exitDate">Exit</th>
             <th data-sort="symbol">Symbol</th>
             <th data-sort="side">Side</th>
             <th data-sort="type">Type</th>
@@ -806,11 +807,11 @@ function renderPerformerList(containerId, items, type) {
     const pctChange = t.entry > 0 ? ((t.exit - t.entry) / t.entry * 100) : 0;
     const isTop = type === 'top';
     return `
-      <div class="performer-item" onclick="showTradeDetail('${t.symbol}', '${t.date}', '${t.regimeColor}')">
+      <div class="performer-item" onclick="showTradeDetail(${t.tradeId})">
         <div class="performer-rank ${isTop ? 'top-rank' : 'bottom-rank'}">${i + 1}</div>
         <div class="performer-info">
           <div class="performer-symbol">${t.symbol}</div>
-          <div class="performer-date">${t.date} · ${t.side} · <span class="regime-badge badge-${t.regimeColor}">${t.regimeColor}</span></div>
+          <div class="performer-date">${t.entryDate} &rarr; ${t.exitDate} · ${t.side} · <span class="regime-badge badge-${t.regimeColor}">${t.regimeColor}</span></div>
         </div>
         <div style="text-align:right;">
           <div class="performer-pnl ${t.pnl >= 0 ? 'positive' : 'negative'}">${fmtPnL(t.pnl)}</div>
@@ -820,21 +821,27 @@ function renderPerformerList(containerId, items, type) {
   }).join('');
 }
 
-function showTradeDetail(symbol, date, regimeColor) {
+function calcHoldingDays(entry, exit) {
+  const d1 = new Date(entry), d2 = new Date(exit);
+  return Math.round((d2 - d1) / 86400000);
+}
+
+function showTradeDetail(tradeId) {
   const section = document.getElementById('trade-detail-section');
   section.style.display = 'block';
   section.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
   const trades = getTrades();
-  const trade = trades.find(t => t.symbol === symbol && t.date === date);
+  const trade = trades.find(t => t.tradeId === tradeId);
   if (!trade) return;
 
+  const holdDays = calcHoldingDays(trade.entryDate, trade.exitDate);
   document.getElementById('trade-detail-title').textContent = `${trade.symbol} — Trade Detail`;
   const pctChange = trade.entry > 0 ? ((trade.exit - trade.entry) / trade.entry * 100) : 0;
   document.getElementById('trade-detail-meta').innerHTML = `
     <span class="trade-meta-item"><span class="dot" style="background:${regimeColorToHex(trade.regimeColor)}"></span> ${trade.regimeColor}</span>
-    <span class="trade-meta-item">${trade.date}</span>
-    <span class="trade-meta-item">${trade.side} · ${trade.type}</span>
+    <span class="trade-meta-item">${trade.entryDate} &rarr; ${trade.exitDate} (${holdDays}d)</span>
+    <span class="trade-meta-item">${trade.side} · ${trade.type === 'Equity and Index Options' ? 'Options' : trade.type}</span>
     <span class="trade-meta-item">Qty: ${fmt(trade.qty)}</span>
     <span class="trade-meta-item">Entry: $${trade.entry.toFixed(2)}</span>
     <span class="trade-meta-item">Exit: $${trade.exit.toFixed(2)}</span>
@@ -865,18 +872,26 @@ function renderTradeChart(trade) {
     return;
   }
 
-  // Find the entry date index in the OHLC data
-  const entryIdx = tickerData.findIndex(d => d.t >= trade.date);
+  // Find entry and exit date indices in the OHLC data
+  const entryIdx = tickerData.findIndex(d => d.t >= trade.entryDate);
+  let exitIdx = tickerData.findIndex(d => d.t >= trade.exitDate);
+  if (exitIdx === -1) exitIdx = tickerData.length - 1;
+
   if (entryIdx === -1) {
     container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-dim);">Trade date not found in OHLC data for ' + baseTicker + '</div>';
     macdContainer.style.display = 'none';
     return;
   }
 
+  // Dynamic padding based on trade duration, with minimum padding
+  const tradeDuration = Math.max(1, exitIdx - entryIdx);
+  const paddingBefore = Math.max(CANDLES_BEFORE, Math.round(tradeDuration * 0.5));
+  const paddingAfter = Math.max(CANDLES_AFTER, Math.round(tradeDuration * 0.3));
+
   // We need extra data before the visible window for EMA calculation (200 period lead-in)
-  const calcStart = Math.max(0, entryIdx - CANDLES_BEFORE - 200);
-  const visibleStart = Math.max(0, entryIdx - CANDLES_BEFORE);
-  const end = Math.min(tickerData.length, entryIdx + CANDLES_AFTER + 1);
+  const calcStart = Math.max(0, entryIdx - paddingBefore - 200);
+  const visibleStart = Math.max(0, entryIdx - paddingBefore);
+  const end = Math.min(tickerData.length, exitIdx + paddingAfter + 1);
   const calcSlice = tickerData.slice(calcStart, end);
   const visibleOffset = visibleStart - calcStart;
 
@@ -919,18 +934,23 @@ function renderTradeChart(trade) {
   }
 
   // --- Entry/exit markers ---
-  // Find the closest candle dates for entry and exit
-  const entryCandle = candleData[0]; // first visible candle is close to entry
-  const entryMarkerDate = candleData.find(d => d.time >= trade.date)?.time || candleData[0].time;
-  // For exit, estimate: we don't have the exact exit date, so use entry date as marker
-  // The entry and exit happen on the same symbol; mark entry on trade date
+  const entryMarkerDate = candleData.find(d => d.time >= trade.entryDate)?.time || candleData[0].time;
+  const exitMarkerDate = candleData.find(d => d.time >= trade.exitDate)?.time || candleData[candleData.length - 1].time;
+
   const markers = [
     {
       time: entryMarkerDate,
       position: 'belowBar', color: '#3b82f6', shape: 'arrowUp',
       text: `Entry $${entryPrice.toFixed(2)}`,
     },
+    {
+      time: exitMarkerDate,
+      position: 'aboveBar', color: isWin ? '#22c55e' : '#ef4444', shape: 'arrowDown',
+      text: `Exit $${exitPrice.toFixed(2)}`,
+    },
   ];
+  // LWC requires markers sorted by time
+  markers.sort((a, b) => a.time < b.time ? -1 : a.time > b.time ? 1 : 0);
   tradeSeries.setMarkers(markers);
 
   // Entry and exit price lines
@@ -1040,8 +1060,9 @@ function renderTable() {
   const pageItems = filtered.slice(start, start + PAGE_SIZE);
 
   document.getElementById('trades-tbody').innerHTML = pageItems.map(t => `
-    <tr onclick="showTradeDetail('${t.symbol.replace(/'/g, "\\'")}', '${t.date}', '${t.regimeColor}')">
-      <td>${t.date}</td>
+    <tr onclick="showTradeDetail(${t.tradeId})">
+      <td>${t.entryDate}</td>
+      <td>${t.exitDate}</td>
       <td style="font-weight:600;">${t.symbol}</td>
       <td>${t.side}</td>
       <td style="font-size:12px;">${t.type === 'Equity and Index Options' ? 'Options' : t.type}</td>
