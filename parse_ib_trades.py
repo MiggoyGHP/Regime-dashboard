@@ -396,10 +396,17 @@ def detect_and_merge_combos(trades):
 
 # ── Regime Color Assignment ───────────────────────────────────────────────────
 
-def get_regime_color(date_str, periods):
-    for p in periods:
+def get_regime_color(date_str, sorted_periods):
+    """Assign regime color with gap tolerance for holiday gaps."""
+    # 1. Exact match within a period
+    for p in sorted_periods:
         if p['start'] <= date_str <= p['end']:
             return p['color']
+    # 2. If date falls in a gap between periods, use preceding period's color
+    for i in range(len(sorted_periods) - 1):
+        if sorted_periods[i]['end'] < date_str < sorted_periods[i+1]['start']:
+            return sorted_periods[i]['color']
+    # 3. Beyond data range → Unknown (user will provide updated data later)
     return 'Unknown'
 
 
@@ -407,6 +414,7 @@ def assign_regime_colors(trades, all_regime_periods):
     """Assign regime colors to trades based on exit date, for each regime definition."""
     result = {}
     for regime_key, periods in all_regime_periods.items():
+        sorted_periods = sorted(periods, key=lambda p: p['start'])
         regime_trades = []
         for i, t in enumerate(trades):
             trade_dict = {
@@ -424,7 +432,7 @@ def assign_regime_colors(trades, all_regime_periods):
                 'fees': t.fees,
                 'status': t.status,
                 'strategy': t.strategy,
-                'regimeColor': get_regime_color(t.exit_date, periods),
+                'regimeColor': get_regime_color(t.exit_date, sorted_periods),
             }
             regime_trades.append(trade_dict)
         result[regime_key] = regime_trades

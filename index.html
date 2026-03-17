@@ -698,8 +698,14 @@ function createEquityChart() {
 function getRegimeColorForDate(date, regimeKey) {
   const periods = DATA.regimePeriods[regimeKey];
   if (!periods) return 'Unknown';
+  // Exact match
   for (const p of periods) {
     if (date >= p.start && date <= p.end) return p.color;
+  }
+  // Gap tolerance: if date falls between two periods, use preceding period's color
+  const sorted = [...periods].sort((a, b) => a.start.localeCompare(b.start));
+  for (let i = 0; i < sorted.length - 1; i++) {
+    if (date > sorted[i].end && date < sorted[i+1].start) return sorted[i].color;
   }
   return 'Unknown';
 }
