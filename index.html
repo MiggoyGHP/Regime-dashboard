@@ -767,6 +767,11 @@ function render() {
   renderRegimeColorCards();
   renderEquityChart();
   renderDrawdownChart();
+  // Sync drawdown to equity's time range after both have data
+  const eqRange = equityChart.timeScale().getVisibleRange();
+  if (eqRange) {
+    try { drawdownChart.timeScale().setVisibleRange(eqRange); } catch(e) {}
+  }
   renderPerformers();
   renderTable();
 }
@@ -1027,16 +1032,16 @@ function renderDrawdownChart() {
 
 function syncEquityDrawdown() {
   let syncing = false;
-  equityChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+  equityChart.timeScale().subscribeVisibleTimeRangeChange(range => {
     if (syncing || !range) return;
     syncing = true;
-    drawdownChart.timeScale().setVisibleLogicalRange(range);
+    try { drawdownChart.timeScale().setVisibleRange(range); } catch(e) {}
     syncing = false;
   });
-  drawdownChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+  drawdownChart.timeScale().subscribeVisibleTimeRangeChange(range => {
     if (syncing || !range) return;
     syncing = true;
-    equityChart.timeScale().setVisibleLogicalRange(range);
+    try { equityChart.timeScale().setVisibleRange(range); } catch(e) {}
     syncing = false;
   });
   equityChart.subscribeCrosshairMove(param => {
