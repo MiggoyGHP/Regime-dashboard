@@ -313,6 +313,11 @@
     <h2 id="trade-detail-title">Select a trade to view details</h2>
     <div class="trade-meta" id="trade-detail-meta"></div>
     <div class="indicator-toggles" id="indicator-toggles">
+      <span class="toggle-label">Regimes:</span>
+      <div class="indicator-toggle active" data-trade-regime="Green" style="color:#22c55e; border-color:#22c55e; background:rgba(34,197,94,0.1);">Green</div>
+      <div class="indicator-toggle active" data-trade-regime="Yellow" style="color:#eab308; border-color:#eab308; background:rgba(234,179,8,0.1);">Yellow</div>
+      <div class="indicator-toggle active" data-trade-regime="Red" style="color:#ef4444; border-color:#ef4444; background:rgba(239,68,68,0.1);">Red</div>
+      <div class="toggle-separator"></div>
       <span class="toggle-label">EMAs:</span>
       <div class="indicator-toggle active" data-indicator="ema10" style="color:#f59e0b; border-color:#f59e0b; background:rgba(245,158,11,0.1);">10</div>
       <div class="indicator-toggle active" data-indicator="ema20" style="color:#3b82f6; border-color:#3b82f6; background:rgba(59,130,246,0.1);">20</div>
@@ -382,6 +387,8 @@ let overlayState = { equity: true, spx: false, vix: false, mmth: false };
 let overlaySeries = {};
 let drawdownChart, drawdownSeries;
 let tradeChart, tradeSeries, macdChart;
+let tradeRegimeBandSeries = {};
+let tradeRegimeState = { Green: true, Yellow: true, Red: true };
 let tradeEmaSeries = {};
 let macdLineSeries, macdSignalSeries, macdHistSeries;
 let indicatorState = { ema10: true, ema20: true, ema25: true, ema50: true, ema200: true, macd: true };
@@ -429,6 +436,7 @@ function init() {
   setupIndicatorToggles();
   setupEquityToggles();
   setupOverlayToggles();
+  setupTradeRegimeToggles();
   createEquityChart();
   createDrawdownChart();
   syncEquityDrawdown();
@@ -514,6 +522,23 @@ function applyOverlayVisibility() {
   if (equityLineSeries) equityLineSeries.applyOptions({ visible: overlayState.equity });
   for (const [key, series] of Object.entries(overlaySeries)) {
     if (series) series.applyOptions({ visible: overlayState[key] });
+  }
+}
+
+function setupTradeRegimeToggles() {
+  document.querySelectorAll('.indicator-toggle[data-trade-regime]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const color = btn.dataset.tradeRegime;
+      tradeRegimeState[color] = !tradeRegimeState[color];
+      btn.classList.toggle('active', tradeRegimeState[color]);
+      applyTradeRegimeVisibility();
+    });
+  });
+}
+
+function applyTradeRegimeVisibility() {
+  for (const [color, series] of Object.entries(tradeRegimeBandSeries)) {
+    if (series) series.applyOptions({ visible: tradeRegimeState[color] });
   }
 }
 
@@ -966,6 +991,35 @@ function renderTradeChart(trade) {
 
   // --- Main candlestick chart ---
   tradeChart = LightweightCharts.createChart(container, CHART_OPTS);
+
+  // Regime background bands (added first so they render behind everything)
+  tradeRegimeBandSeries = {};
+  const tradeBandColors = {
+    Green:  { top: 'rgba(34,197,94,0.18)',  bottom: 'rgba(34,197,94,0.18)' },
+    Yellow: { top: 'rgba(234,179,8,0.18)',   bottom: 'rgba(234,179,8,0.18)' },
+    Red:    { top: 'rgba(239,68,68,0.18)',   bottom: 'rgba(239,68,68,0.18)' },
+  };
+  const regimeKey = 'regime' + currentRegime;
+  for (const [color, fill] of Object.entries(tradeBandColors)) {
+    tradeRegimeBandSeries[color] = tradeChart.addAreaSeries({
+      lineWidth: 0, lineColor: 'transparent',
+      topColor: fill.top, bottomColor: fill.bottom,
+      lineType: 1, priceScaleId: 'tradeRegime',
+      lastValueVisible: false, priceLineVisible: false,
+      crosshairMarkerVisible: false,
+      visible: tradeRegimeState[color],
+    });
+  }
+  tradeChart.priceScale('tradeRegime').applyOptions({
+    visible: false, scaleMargins: { top: 0, bottom: 0 },
+  });
+  // Build and set regime band data for the visible candle dates
+  const tradeDates = candleData.map(d => d.time);
+  const tradeRegimeBands = buildRegimeBandData(tradeDates, regimeKey);
+  for (const color of ['Green', 'Yellow', 'Red']) {
+    tradeRegimeBandSeries[color].setData(tradeRegimeBands[color]);
+  }
+
   tradeSeries = tradeChart.addCandlestickSeries({
     upColor: '#22c55e', downColor: '#ef4444',
     borderUpColor: '#22c55e', borderDownColor: '#ef4444',
