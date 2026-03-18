@@ -224,6 +224,52 @@
   .badge-Yellow { background: var(--yellow-bg); color: var(--yellow); }
   .badge-Red { background: var(--red-bg); color: var(--red); }
   .badge-Unknown { background: var(--unknown-bg); color: var(--unknown); }
+
+  /* Strategy & trade type tag badges */
+  .strategy-badge, .trade-type-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 11px; font-weight: 600; cursor: pointer;
+    transition: opacity 0.15s; white-space: nowrap;
+  }
+  .strategy-badge:hover, .trade-type-badge:hover { opacity: 0.8; }
+  .strat-Bluesky { background: rgba(56,189,248,0.12); color: #38bdf8; }
+  .strat-Capitulation { background: rgba(244,63,94,0.12); color: #f43f5e; }
+  .strat-Coil { background: rgba(167,139,250,0.12); color: #a78bfa; }
+  .strat-IPO { background: rgba(251,146,60,0.12); color: #fb923c; }
+  .strat-Intraday { background: rgba(250,204,21,0.12); color: #facc15; }
+  .strat-Momentum { background: rgba(52,211,153,0.12); color: #34d399; }
+  .strat-Others { background: rgba(148,163,184,0.12); color: #94a3b8; }
+  .strat-Pullback { background: rgba(244,114,182,0.12); color: #f472b6; }
+  .strat-Range { background: rgba(96,165,250,0.12); color: #60a5fa; }
+  .strat-Reset { background: rgba(192,132,252,0.12); color: #c084fc; }
+  .strat-Reversal { background: rgba(45,212,191,0.12); color: #2dd4bf; }
+  .tt-TradeA { background: rgba(245,158,11,0.12); color: #f59e0b; }
+  .tt-TradeB { background: rgba(59,130,246,0.12); color: #3b82f6; }
+  .tt-TradeE { background: rgba(16,185,129,0.12); color: #10b981; }
+  .tag-empty {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 11px; color: var(--text-dim); cursor: pointer;
+    border: 1px dashed var(--border);
+  }
+  .tag-empty:hover { border-color: var(--text-dim); }
+
+  /* Tag dropdown editor */
+  .tag-dropdown {
+    position: absolute; z-index: 100;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 4px 0;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    max-height: 240px; overflow-y: auto;
+    min-width: 140px;
+  }
+  .tag-dropdown-item {
+    padding: 6px 14px; cursor: pointer; font-size: 12px;
+    transition: background 0.1s; white-space: nowrap;
+    color: var(--text);
+  }
+  .tag-dropdown-item:hover { background: var(--card-hover, rgba(255,255,255,0.05)); }
+  .tag-dropdown-item.selected { color: var(--blue); font-weight: 600; }
+
   .pagination {
     display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 14px;
   }
@@ -349,6 +395,28 @@
         <option value="Stocks">Stocks</option>
         <option value="Equity and Index Options">Options</option>
       </select>
+      <select class="sort-select" id="strategy-filter-table">
+        <option value="all">All Strategies</option>
+        <option value="Bluesky">Bluesky</option>
+        <option value="Capitulation">Capitulation</option>
+        <option value="Coil">Coil</option>
+        <option value="IPO">IPO</option>
+        <option value="Intraday Price Action">Intraday</option>
+        <option value="Momentum">Momentum</option>
+        <option value="Others">Others</option>
+        <option value="Pullback">Pullback</option>
+        <option value="Range">Range</option>
+        <option value="Reset">Reset</option>
+        <option value="Reversal">Reversal</option>
+        <option value="">(Untagged)</option>
+      </select>
+      <select class="sort-select" id="tradetype-filter-table">
+        <option value="all">All Trade Types</option>
+        <option value="Trade A">Trade A</option>
+        <option value="Trade B">Trade B</option>
+        <option value="Trade E">Trade E</option>
+        <option value="">(Untagged)</option>
+      </select>
     </div>
     <div style="overflow-x:auto;">
       <table>
@@ -359,6 +427,8 @@
             <th data-sort="symbol">Symbol</th>
             <th data-sort="side">Side</th>
             <th data-sort="type">Type</th>
+            <th data-sort="primaryStrategy">Strategy</th>
+            <th data-sort="tradeType">Trade Type</th>
             <th data-sort="qty">Qty</th>
             <th data-sort="entry">Entry</th>
             <th data-sort="exit">Exit</th>
@@ -396,6 +466,8 @@ let sortField = 'pnl', sortDir = -1;
 let searchTerm = '';
 let tableColorFilter = 'all';
 let tableTypeFilter = 'all';
+let tableStrategyFilter = 'all';
+let tableTradeTypeFilter = 'all';
 let currentPage = 1;
 const PAGE_SIZE = 20;
 const CANDLES_BEFORE = 120;
@@ -424,11 +496,105 @@ const CHART_OPTS = {
   handleScroll: { vertTouchDrag: false },
 };
 
-// Load both data files in parallel
+const STRATEGY_VALUES = [
+  'Bluesky', 'Capitulation', 'Coil', 'IPO', 'Intraday Price Action',
+  'Momentum', 'Others', 'Pullback', 'Range', 'Reset', 'Reversal'
+];
+const TRADE_TYPE_VALUES = ['Trade A', 'Trade B', 'Trade E'];
+
+const STRATEGY_CLASS_MAP = {
+  'Bluesky': 'strat-Bluesky', 'Capitulation': 'strat-Capitulation',
+  'Coil': 'strat-Coil', 'IPO': 'strat-IPO',
+  'Intraday Price Action': 'strat-Intraday', 'Momentum': 'strat-Momentum',
+  'Others': 'strat-Others', 'Pullback': 'strat-Pullback',
+  'Range': 'strat-Range', 'Reset': 'strat-Reset', 'Reversal': 'strat-Reversal',
+};
+
+function strategyClass(s) { return s ? (STRATEGY_CLASS_MAP[s] || 'strat-Others') : ''; }
+function tradeTypeClass(tt) { return tt ? 'tt-' + tt.replace(/\s+/g, '') : ''; }
+function strategyLabel(s) { return s === 'Intraday Price Action' ? 'Intraday' : (s || ''); }
+
+// --- Tag Override System (localStorage) ---
+function getTagOverrides() {
+  try { return JSON.parse(localStorage.getItem('tagOverrides') || '{}'); }
+  catch { return {}; }
+}
+function saveTagOverride(tradeId, field, value) {
+  const ov = getTagOverrides();
+  if (!ov[tradeId]) ov[tradeId] = {};
+  ov[tradeId][field] = value;
+  localStorage.setItem('tagOverrides', JSON.stringify(ov));
+}
+function applyTagOverrides() {
+  const ov = getTagOverrides();
+  if (!Object.keys(ov).length) return;
+  for (const rk in DATA.regimeTrades) {
+    for (const t of DATA.regimeTrades[rk]) {
+      const o = ov[t.tradeId];
+      if (o) {
+        if (o.primaryStrategy !== undefined) t.primaryStrategy = o.primaryStrategy;
+        if (o.tradeType !== undefined) t.tradeType = o.tradeType;
+      }
+    }
+  }
+}
+
+// --- Tag Dropdown Editor ---
+let activeDropdown = null;
+function closeDropdown() { if (activeDropdown) { activeDropdown.remove(); activeDropdown = null; } }
+document.addEventListener('click', () => closeDropdown());
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDropdown(); });
+
+function showTagDropdown(event, tradeId, field, currentValue) {
+  event.stopPropagation();
+  closeDropdown();
+  const values = field === 'primaryStrategy' ? STRATEGY_VALUES : TRADE_TYPE_VALUES;
+  const rect = event.target.getBoundingClientRect();
+  const dd = document.createElement('div');
+  dd.className = 'tag-dropdown';
+  dd.style.top = (rect.bottom + window.scrollY + 4) + 'px';
+  dd.style.left = rect.left + 'px';
+  dd.onclick = e => e.stopPropagation();
+
+  const clear = document.createElement('div');
+  clear.className = 'tag-dropdown-item' + (!currentValue ? ' selected' : '');
+  clear.textContent = '(none)';
+  clear.onclick = () => applyTagEdit(tradeId, field, '');
+  dd.appendChild(clear);
+
+  values.forEach(v => {
+    const item = document.createElement('div');
+    item.className = 'tag-dropdown-item' + (v === currentValue ? ' selected' : '');
+    item.textContent = field === 'primaryStrategy' ? strategyLabel(v) : v;
+    item.onclick = () => applyTagEdit(tradeId, field, v);
+    dd.appendChild(item);
+  });
+
+  document.body.appendChild(dd);
+  activeDropdown = dd;
+  // Keep in viewport
+  const ddr = dd.getBoundingClientRect();
+  if (ddr.right > window.innerWidth) dd.style.left = (window.innerWidth - ddr.width - 8) + 'px';
+  if (ddr.bottom > window.innerHeight) dd.style.top = (rect.top + window.scrollY - ddr.height - 4) + 'px';
+}
+
+function applyTagEdit(tradeId, field, value) {
+  closeDropdown();
+  for (const rk in DATA.regimeTrades) {
+    const t = DATA.regimeTrades[rk].find(t => t.tradeId === tradeId);
+    if (t) t[field] = value;
+  }
+  saveTagOverride(tradeId, field, value);
+  renderTable();
+  if (selectedTradeIdx === tradeId) showTradeDetail(tradeId);
+}
+
+// Load both data files in parallel (cache-bust to pick up regenerated data)
+const _cb = '?v=' + Date.now();
 Promise.all([
-  fetch('data.json').then(r => r.json()),
-  fetch('ohlc.json').then(r => r.json()),
-]).then(([d, o]) => { DATA = d; OHLC = o; init(); });
+  fetch('data.json' + _cb).then(r => r.json()),
+  fetch('ohlc.json' + _cb).then(r => r.json()),
+]).then(([d, o]) => { DATA = d; OHLC = o; applyTagOverrides(); init(); });
 
 function init() {
   setupRegimeButtons();
@@ -570,6 +736,16 @@ function setupTableControls() {
   });
   document.getElementById('type-filter-table').addEventListener('change', e => {
     tableTypeFilter = e.target.value;
+    currentPage = 1;
+    renderTable();
+  });
+  document.getElementById('strategy-filter-table').addEventListener('change', e => {
+    tableStrategyFilter = e.target.value;
+    currentPage = 1;
+    renderTable();
+  });
+  document.getElementById('tradetype-filter-table').addEventListener('change', e => {
+    tableTradeTypeFilter = e.target.value;
     currentPage = 1;
     renderTable();
   });
@@ -926,6 +1102,8 @@ function showTradeDetail(tradeId) {
     <span class="trade-meta-item"><span class="dot" style="background:${regimeColorToHex(trade.regimeColor)}"></span> ${trade.regimeColor}</span>
     <span class="trade-meta-item">${trade.entryDate} &rarr; ${trade.exitDate} (${holdDays}d)</span>
     <span class="trade-meta-item">${trade.side} · ${typeLabel}</span>
+    ${trade.primaryStrategy ? `<span class="trade-meta-item"><span class="strategy-badge ${strategyClass(trade.primaryStrategy)}">${strategyLabel(trade.primaryStrategy)}</span></span>` : ''}
+    ${trade.tradeType ? `<span class="trade-meta-item"><span class="trade-type-badge ${tradeTypeClass(trade.tradeType)}">${trade.tradeType}</span></span>` : ''}
     <span class="trade-meta-item">Qty: ${fmt(trade.qty)}</span>
     <span class="trade-meta-item">${isOptions ? 'Premium' : 'Entry'}: $${trade.entry.toFixed(2)}</span>
     <span class="trade-meta-item">${isOptions ? 'Close' : 'Exit'}: $${trade.exit.toFixed(2)}</span>
@@ -1161,9 +1339,16 @@ function renderTradeChart(trade) {
 function renderTable() {
   const trades = getTrades();
   let filtered = [...trades];
-  if (searchTerm) filtered = filtered.filter(t => t.symbol.toLowerCase().includes(searchTerm) || (t.strategy && t.strategy.toLowerCase().includes(searchTerm)));
+  if (searchTerm) filtered = filtered.filter(t =>
+    t.symbol.toLowerCase().includes(searchTerm) ||
+    (t.strategy && t.strategy.toLowerCase().includes(searchTerm)) ||
+    (t.primaryStrategy && t.primaryStrategy.toLowerCase().includes(searchTerm)) ||
+    (t.tradeType && t.tradeType.toLowerCase().includes(searchTerm))
+  );
   if (tableColorFilter !== 'all') filtered = filtered.filter(t => t.regimeColor === tableColorFilter);
   if (tableTypeFilter !== 'all') filtered = filtered.filter(t => t.type === tableTypeFilter);
+  if (tableStrategyFilter !== 'all') filtered = filtered.filter(t => t.primaryStrategy === tableStrategyFilter);
+  if (tableTradeTypeFilter !== 'all') filtered = filtered.filter(t => t.tradeType === tableTradeTypeFilter);
 
   filtered.sort((a, b) => {
     let va = a[sortField], vb = b[sortField];
@@ -1182,6 +1367,14 @@ function renderTable() {
       <td style="font-weight:600;">${t.symbol}</td>
       <td>${t.side}</td>
       <td style="font-size:12px;">${t.strategy || (t.type === 'Equity and Index Options' ? 'Options' : t.type)}</td>
+      <td onclick="event.stopPropagation()">${t.primaryStrategy
+        ? `<span class="strategy-badge ${strategyClass(t.primaryStrategy)}" onclick="showTagDropdown(event,${t.tradeId},'primaryStrategy','${t.primaryStrategy}')">${strategyLabel(t.primaryStrategy)}</span>`
+        : `<span class="tag-empty" onclick="showTagDropdown(event,${t.tradeId},'primaryStrategy','')">+</span>`
+      }</td>
+      <td onclick="event.stopPropagation()">${t.tradeType
+        ? `<span class="trade-type-badge ${tradeTypeClass(t.tradeType)}" onclick="showTagDropdown(event,${t.tradeId},'tradeType','${t.tradeType}')">${t.tradeType}</span>`
+        : `<span class="tag-empty" onclick="showTagDropdown(event,${t.tradeId},'tradeType','')">+</span>`
+      }</td>
       <td>${fmt(t.qty)}</td>
       <td>$${t.entry.toFixed(2)}</td>
       <td>$${t.exit.toFixed(2)}</td>

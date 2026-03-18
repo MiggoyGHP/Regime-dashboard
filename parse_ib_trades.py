@@ -6,10 +6,13 @@ Handles 2024, 2025, and 2026 annual/period statements.
 import csv
 import json
 import io
+import os
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
+import openpyxl
+import yfinance as yf
 
 # Force UTF-8 output on Windows
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -432,11 +435,56 @@ def assign_regime_colors(trades, all_regime_periods):
                 'fees': t.fees,
                 'status': t.status,
                 'strategy': t.strategy,
+                'primaryStrategy': '',
+                'tradeType': '',
                 'regimeColor': get_regime_color(t.exit_date, sorted_periods),
             }
             regime_trades.append(trade_dict)
         result[regime_key] = regime_trades
     return result
+
+# ── TMS Tags ─────────────────────────────────────────────────────────────────
+
+def load_tms_tags(script_dir):
+    """Load primary_strategy and trade_type from TMS data.csv."""
+    from datetime import datetime
+    tms_path = os.path.join(script_dir, 'TMS data.csv')
+    tms_lookup = {}
+    try:
+        with open(tms_path, 'r', encoding='utf-8-sig') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                symbol = row['symbol'].strip()
+                fbd = row['first_buy_date'].strip()
+                if not fbd:
+                    continue
+                entry_date = datetime.strptime(fbd, '%m/%d/%Y').strftime('%Y-%m-%d')
+                key = (symbol, entry_date)
+                tms_lookup[key] = {
+                    'primaryStrategy': row['primary_strategy'].strip(),
+                    'tradeType': row['trade_type'].strip(),
+                }
+        print(f'  TMS tags loaded: {len(tms_lookup)} unique (symbol, date) keys')
+    except FileNotFoundError:
+        print('  WARNING: TMS data.csv not found, tags will be empty')
+    return tms_lookup
+
+def apply_tms_tags(regime_trades, tms_lookup):
+    """Apply TMS strategy and trade type tags to regime trades."""
+    matched = 0
+    total = 0
+    for regime_key, trades in regime_trades.items():
+        for t in trades:
+            total += 1
+            key = (t['symbol'], t['entryDate'])
+            if key in tms_lookup:
+                t['primaryStrategy'] = tms_lookup[key]['primaryStrategy']
+                t['tradeType'] = tms_lookup[key]['tradeType']
+                matched += 1
+    n_regimes = len(regime_trades)
+    if n_regimes and total:
+        print(f'  TMS tag matching: {matched // n_regimes}/{total // n_regimes} trades matched '
+              f'({matched // n_regimes / (total // n_regimes) * 100:.1f}%)')
 
 # ── Equity Curve ──────────────────────────────────────────────────────────────
 
@@ -468,6 +516,59 @@ def build_equity_curve(trades):
             'regimeColor': 'Unknown',
         })
     return curve
+
+# ── Overlay Data (SPX, VIX, MMTH) ────────────────────────────────────────────
+
+def _download_yf_series(ticker, label, start_date, end_date):
+    """Download a single yfinance ticker and return as [{time, value}]."""
+    try:
+        df = yf.download(ticker, start=start_date, end=end_date, auto_adjust=True, progress=False)
+        data = [
+            {'time': d.strftime('%Y-%m-%d'), 'value': round(float(row['Close'].iloc[0]), 2)}
+            for d, row in df.iterrows()
+        ]
+        print(f'  {label}: {len(data)} data points')
+        return data
+    except Exception as e:
+        print(f'  {label} download failed: {e}')
+        return []
+
+def build_overlay_data(equity_curve):
+    """Download SPX/VIX from yfinance and load MMTH from Excel, aligned to equity curve dates."""
+    if not equity_curve:
+        return {}
+
+    start_date = equity_curve[0]['date']
+    end_date = equity_curve[-1]['date']
+    overlays = {}
+
+    overlays['spx'] = _download_yf_series('^GSPC', 'SPX', start_date, end_date)
+    overlays['vix'] = _download_yf_series('^VIX', 'VIX', start_date, end_date)
+
+    # MMTH from Excel
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        mmth_path = os.path.join(script_dir, 'MMTH data.xlsx')
+        wb = openpyxl.load_workbook(mmth_path, read_only=True)
+        ws = wb['Sheet1']
+        mmth_data = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            dt = row[0]   # Time column
+            latest = row[4]  # Latest column (close value)
+            if dt and latest is not None:
+                date_str = dt.strftime('%Y-%m-%d')
+                if start_date <= date_str <= end_date:
+                    mmth_data.append({'time': date_str, 'value': round(float(latest), 2)})
+        wb.close()
+        # Excel is sorted newest-first, so sort chronologically
+        mmth_data.sort(key=lambda x: x['time'])
+        overlays['mmth'] = mmth_data
+        print(f'  MMTH: {len(overlays["mmth"])} data points')
+    except Exception as e:
+        print(f'  MMTH load failed: {e}')
+        overlays['mmth'] = []
+
+    return overlays
 
 # ── Regime Stats ──────────────────────────────────────────────────────────────
 
@@ -559,12 +660,22 @@ def main():
     # 4. Assign regime colors
     regime_trades = assign_regime_colors(closed, regime_periods)
 
+    # 4b. Apply TMS strategy/trade type tags
+    print('\nLoading TMS tags...')
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    tms_lookup = load_tms_tags(script_dir)
+    apply_tms_tags(regime_trades, tms_lookup)
+
     # 5. Build equity curve
     equity_curve = build_equity_curve(closed)
     print(f'\nEquity curve: {len(equity_curve)} trading days')
     if equity_curve:
         print(f'  Date range: {equity_curve[0]["date"]} to {equity_curve[-1]["date"]}')
         print(f'  Final cumPnL: ${equity_curve[-1]["cumPnL"]:,.2f}')
+
+    # 5b. Build overlay data (SPX, VIX, MMTH)
+    print('\nBuilding overlay data...')
+    overlays = build_overlay_data(equity_curve)
 
     # 6. Compute regime stats
     regime_stats = compute_regime_stats(regime_trades)
@@ -597,6 +708,7 @@ def main():
         'regimeTrades': regime_trades,
         'regimeStats': regime_stats,
         'regimePeriods': regime_periods,
+        'overlays': overlays,
     }
 
     with open('data.json', 'w') as f:
