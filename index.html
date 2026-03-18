@@ -977,7 +977,8 @@ function renderRegimeColorCards() {
     const nTrades = s['# Trades'] || 0;
     const winRate = s['Win Rate'] || 0;
     const avgPnL = s['Avg P&L per Trade'] || 0;
-    const pf = s['Profit Factor'] || 0;
+    const edgeRatio = s['Edge Ratio'] || 0;
+    const avgHold = s['Avg Holding Days'] || 0;
     // Compute trade type breakdown from live trades
     const colorTrades = trades.filter(t => t.regimeColor === c.key);
     const ttStats = computeTradeTypeStats(colorTrades);
@@ -1003,7 +1004,8 @@ function renderRegimeColorCards() {
           <div class="mini-stat"><div class="mini-label"># Trades</div><div class="mini-value">${fmt(nTrades)}</div></div>
           <div class="mini-stat"><div class="mini-label">Win Rate</div><div class="mini-value">${(winRate * 100).toFixed(1)}%</div></div>
           <div class="mini-stat"><div class="mini-label">Avg P&L</div><div class="mini-value ${avgPnL >= 0 ? 'positive' : 'negative'}">${fmtPnL(avgPnL)}</div></div>
-          <div class="mini-stat"><div class="mini-label">Profit Factor</div><div class="mini-value">${pf ? pf.toFixed(2) : '—'}</div></div>
+          <div class="mini-stat"><div class="mini-label">Edge Ratio</div><div class="mini-value">${edgeRatio ? edgeRatio.toFixed(2) : '—'}</div></div>
+          <div class="mini-stat"><div class="mini-label">Avg Hold</div><div class="mini-value">${avgHold ? avgHold.toFixed(1) + 'd' : '—'}</div></div>
           <div class="mini-stat"><div class="mini-label">Best</div><div class="mini-value positive">${fmtPnL(s['Best Trade'] || 0)}</div></div>
         </div>
         ${ttHtml ? `<div class="tt-breakdown"><div class="tt-breakdown-label">By Trade Type</div>${ttHtml}</div>` : ''}

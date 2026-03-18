@@ -10,6 +10,7 @@ import os
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime as _dt
 from typing import Optional
 import openpyxl
 import yfinance as yf
@@ -592,6 +593,22 @@ def compute_regime_stats(regime_trades):
             gross_profit = sum(winners) if winners else 0
             gross_loss = abs(sum(losers)) if losers else 0
 
+            avg_win = (gross_profit / len(winners)) if winners else 0
+            avg_loss = (gross_loss / len(losers)) if losers else 0
+            edge_ratio = round(avg_win / avg_loss, 4) if avg_loss > 0 else 0
+
+            # Average holding period in days
+            holding_days = []
+            for t in ctrades:
+                if t.get('entryDate') and t.get('exitDate'):
+                    try:
+                        d1 = _dt.strptime(t['entryDate'], '%Y-%m-%d')
+                        d2 = _dt.strptime(t['exitDate'], '%Y-%m-%d')
+                        holding_days.append((d2 - d1).days)
+                    except (ValueError, TypeError):
+                        pass
+            avg_hold = round(sum(holding_days) / len(holding_days), 1) if holding_days else 0
+
             regime_stats[color] = {
                 '# Trades': n,
                 'Total P&L': round(total_pnl, 2),
@@ -602,7 +619,8 @@ def compute_regime_stats(regime_trades):
                 '# Losers': len(losers),
                 'Best Trade': round(max(pnls), 2) if pnls else 0,
                 'Worst Trade': round(min(pnls), 2) if pnls else 0,
-                'Profit Factor': round(gross_profit / gross_loss, 4) if gross_loss > 0 else 0,
+                'Edge Ratio': edge_ratio,
+                'Avg Holding Days': avg_hold,
             }
 
         stats[regime_key] = regime_stats
