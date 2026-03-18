@@ -92,6 +92,62 @@
   .mini-stat .mini-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; }
   .mini-stat .mini-value { font-size: 14px; font-weight: 600; }
 
+  /* Trade type breakdown inside regime cards */
+  .tt-breakdown {
+    margin-top: 10px; padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+  .tt-breakdown-label {
+    font-size: 10px; color: var(--text-dim); text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 6px;
+  }
+  .tt-breakdown-row {
+    display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px;
+  }
+  .tt-breakdown-row .tt-tag {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 10px; font-weight: 600; min-width: 20px; text-align: center;
+  }
+  .tt-breakdown-row .tt-count { color: var(--text-dim); font-size: 11px; min-width: 28px; }
+  .tt-breakdown-row .tt-pnl { font-weight: 600; font-size: 12px; min-width: 70px; }
+  .tt-breakdown-row .tt-wr { color: var(--text-dim); font-size: 11px; }
+
+  /* Strategy Performance by Regime section */
+  .strategy-perf-section { margin-bottom: 20px; }
+  .strategy-perf-section > h2 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .strategy-perf-subtitle { font-size: 11px; color: var(--text-dim); margin-bottom: 14px; }
+  .strategy-panels { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .strategy-panel {
+    background: var(--card); border-radius: 10px; padding: 16px 18px;
+    border: 1px solid var(--border); border-top: 3px solid;
+  }
+  .strategy-panel.panel-green { border-top-color: var(--green); }
+  .strategy-panel.panel-yellow { border-top-color: var(--yellow); }
+  .strategy-panel.panel-red { border-top-color: var(--red); }
+  .strategy-panel-title {
+    font-size: 13px; font-weight: 600; margin-bottom: 12px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .strategy-bar-row {
+    display: flex; align-items: center; gap: 6px; margin-bottom: 5px; font-size: 12px;
+  }
+  .strategy-bar-row.low-sample { opacity: 0.6; }
+  .strategy-bar-label {
+    min-width: 65px; max-width: 65px; text-align: right; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; font-size: 11px; color: var(--text);
+  }
+  .strategy-bar-container {
+    flex: 1; height: 18px; background: rgba(255,255,255,0.03);
+    border-radius: 3px; position: relative; overflow: hidden;
+  }
+  .strategy-bar {
+    height: 100%; border-radius: 3px; transition: width 0.6s ease-out; min-width: 0;
+  }
+  .strategy-bar.bar-positive { background: var(--green); opacity: 0.7; }
+  .strategy-bar.bar-negative { background: var(--red); opacity: 0.7; float: right; }
+  .strategy-bar-value { min-width: 80px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+  .strategy-bar-n { font-size: 10px; color: var(--text-dim); min-width: 36px; }
+
   /* Charts */
   .chart-section {
     background: var(--card); border-radius: 10px; padding: 20px;
@@ -285,6 +341,7 @@
     .summary-row { grid-template-columns: repeat(3, 1fr); }
     .regime-stats-row { grid-template-columns: repeat(2, 1fr); }
     .performers-grid { grid-template-columns: 1fr; }
+    .strategy-panels { grid-template-columns: 1fr; }
   }
   @media (max-width: 768px) {
     .header { flex-direction: column; gap: 12px; align-items: flex-start; }
@@ -311,6 +368,9 @@
 
   <!-- Regime color breakdown -->
   <div class="regime-stats-row" id="regime-color-cards"></div>
+
+  <!-- Strategy Performance by Regime -->
+  <div class="strategy-perf-section" id="strategy-perf-section"></div>
 
   <!-- Equity Curve Chart -->
   <div class="chart-section">
@@ -514,6 +574,42 @@ function strategyClass(s) { return s ? (STRATEGY_CLASS_MAP[s] || 'strat-Others')
 function tradeTypeClass(tt) { return tt ? 'tt-' + tt.replace(/\s+/g, '') : ''; }
 function strategyLabel(s) { return s === 'Intraday Price Action' ? 'Intraday' : (s || ''); }
 
+// --- Stats Computation Helpers ---
+function computeTradeTypeStats(trades) {
+  const result = {};
+  TRADE_TYPE_VALUES.forEach(tt => {
+    const subset = trades.filter(t => t.tradeType === tt);
+    const n = subset.length;
+    const totalPnL = subset.reduce((s, t) => s + t.pnl, 0);
+    const winners = subset.filter(t => t.pnl > 0).length;
+    result[tt] = { count: n, totalPnL, winRate: n > 0 ? winners / n : 0 };
+  });
+  return result;
+}
+
+function computeStrategyExpectancy(trades, regimeColor) {
+  const filtered = trades.filter(t => t.regimeColor === regimeColor);
+  const stratMap = {};
+  STRATEGY_VALUES.forEach(s => { stratMap[s] = []; });
+  filtered.forEach(t => {
+    if (t.primaryStrategy && stratMap[t.primaryStrategy] !== undefined)
+      stratMap[t.primaryStrategy].push(t.pnl);
+  });
+  const results = STRATEGY_VALUES.map(s => {
+    const pnls = stratMap[s];
+    const n = pnls.length;
+    const totalPnL = pnls.reduce((a, b) => a + b, 0);
+    return { strategy: s, count: n, expectancy: n > 0 ? totalPnL / n : 0, lowSample: n > 0 && n < 30 };
+  });
+  results.sort((a, b) => {
+    if (a.count === 0 && b.count !== 0) return -1;
+    if (a.count !== 0 && b.count === 0) return 1;
+    if (a.count === 0 && b.count === 0) return a.strategy.localeCompare(b.strategy);
+    return b.expectancy - a.expectancy;
+  });
+  return results;
+}
+
 // --- Tag Override System (localStorage) ---
 function getTagOverrides() {
   try { return JSON.parse(localStorage.getItem('tagOverrides') || '{}'); }
@@ -585,6 +681,8 @@ function applyTagEdit(tradeId, field, value) {
     if (t) t[field] = value;
   }
   saveTagOverride(tradeId, field, value);
+  renderRegimeColorCards();
+  renderStrategyPerformance();
   renderTable();
   if (selectedTradeIdx === tradeId) showTradeDetail(tradeId);
 }
@@ -765,6 +863,7 @@ function setupTableControls() {
 function render() {
   renderSummary();
   renderRegimeColorCards();
+  renderStrategyPerformance();
   renderEquityChart();
   renderDrawdownChart();
   // Sync drawdown to equity's time range after both have data
@@ -864,12 +963,14 @@ function renderSummary() {
 
 function renderRegimeColorCards() {
   const stats = getStats();
+  const trades = getTrades();
   const colors = [
     { key: 'Green', cls: 'green-card', dotColor: 'var(--green)' },
     { key: 'Yellow', cls: 'yellow-card', dotColor: 'var(--yellow)' },
     { key: 'Red', cls: 'red-card', dotColor: 'var(--red)' },
     { key: 'Unknown', cls: 'unknown-card', dotColor: 'var(--unknown)' },
   ];
+  const ttLabels = { 'Trade A': 'A', 'Trade B': 'B', 'Trade E': 'E' };
   const html = colors.map(c => {
     const s = stats[c.key] || {};
     const totalPnL = s['Total P&L'] || 0;
@@ -877,6 +978,20 @@ function renderRegimeColorCards() {
     const winRate = s['Win Rate'] || 0;
     const avgPnL = s['Avg P&L per Trade'] || 0;
     const pf = s['Profit Factor'] || 0;
+    // Compute trade type breakdown from live trades
+    const colorTrades = trades.filter(t => t.regimeColor === c.key);
+    const ttStats = computeTradeTypeStats(colorTrades);
+    const ttHtml = TRADE_TYPE_VALUES.map(tt => {
+      const ts = ttStats[tt];
+      if (ts.count === 0) return '';
+      const pnlCls = ts.totalPnL >= 0 ? 'positive' : 'negative';
+      return `<div class="tt-breakdown-row">
+        <span class="tt-tag trade-type-badge ${tradeTypeClass(tt)}">${ttLabels[tt]}</span>
+        <span class="tt-count">${ts.count}</span>
+        <span class="tt-pnl ${pnlCls}">${fmtPnL(ts.totalPnL)}</span>
+        <span class="tt-wr">${(ts.winRate * 100).toFixed(0)}%</span>
+      </div>`;
+    }).filter(Boolean).join('');
     return `
       <div class="regime-color-card ${c.cls}">
         <div class="color-label">
@@ -891,9 +1006,59 @@ function renderRegimeColorCards() {
           <div class="mini-stat"><div class="mini-label">Profit Factor</div><div class="mini-value">${pf ? pf.toFixed(2) : '—'}</div></div>
           <div class="mini-stat"><div class="mini-label">Best</div><div class="mini-value positive">${fmtPnL(s['Best Trade'] || 0)}</div></div>
         </div>
+        ${ttHtml ? `<div class="tt-breakdown"><div class="tt-breakdown-label">By Trade Type</div>${ttHtml}</div>` : ''}
       </div>`;
   }).join('');
   document.getElementById('regime-color-cards').innerHTML = html;
+}
+
+function renderStrategyPerformance() {
+  const trades = getTrades();
+  const regimes = [
+    { color: 'Green', cls: 'panel-green', dotColor: 'var(--green)' },
+    { color: 'Yellow', cls: 'panel-yellow', dotColor: 'var(--yellow)' },
+    { color: 'Red', cls: 'panel-red', dotColor: 'var(--red)' },
+  ];
+  const panels = regimes.map(r => {
+    const data = computeStrategyExpectancy(trades, r.color);
+    const withData = data.filter(d => d.count > 0);
+    const maxAbs = withData.length > 0 ? Math.max(...withData.map(d => Math.abs(d.expectancy))) : 1;
+    const rows = data.map(d => {
+      if (d.count === 0) {
+        return `<div class="strategy-bar-row">
+          <div class="strategy-bar-label">${strategyLabel(d.strategy)}\u2020</div>
+          <div class="strategy-bar-container"></div>
+          <div class="strategy-bar-value" style="color:var(--text-dim)"></div>
+          <div class="strategy-bar-n">n=0*</div>
+        </div>`;
+      }
+      const pct = Math.min(100, (Math.abs(d.expectancy) / maxAbs) * 100);
+      const barCls = d.expectancy >= 0 ? 'bar-positive' : 'bar-negative';
+      const valCls = d.expectancy >= 0 ? 'positive' : 'negative';
+      const dagger = d.lowSample ? '\u2020' : '';
+      const rowCls = d.lowSample ? ' low-sample' : '';
+      return `<div class="strategy-bar-row${rowCls}">
+        <div class="strategy-bar-label">${strategyLabel(d.strategy)}${dagger}</div>
+        <div class="strategy-bar-container">
+          <div class="strategy-bar ${barCls}" style="width:${pct}%"></div>
+        </div>
+        <div class="strategy-bar-value ${valCls}">${fmtPnL(Math.round(d.expectancy))}</div>
+        <div class="strategy-bar-n">n=${d.count}${d.lowSample ? '*' : ''}</div>
+      </div>`;
+    }).join('');
+    return `<div class="strategy-panel ${r.cls}">
+      <div class="strategy-panel-title">
+        <span class="color-dot" style="background:${r.dotColor}"></span>
+        ${r.color} Regime
+      </div>
+      ${rows}
+    </div>`;
+  }).join('');
+  document.getElementById('strategy-perf-section').innerHTML = `
+    <h2>Strategy Performance by Regime</h2>
+    <div class="strategy-perf-subtitle">\u2020 = thin cell (n &lt; 30), descriptive only &nbsp;&nbsp; * = small sample</div>
+    <div class="strategy-panels">${panels}</div>
+  `;
 }
 
 function regimeColorToHex(color) {
