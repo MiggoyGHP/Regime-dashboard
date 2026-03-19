@@ -571,6 +571,59 @@ def build_overlay_data(equity_curve):
 
     return overlays
 
+# ── OHLC Data Sync ────────────────────────────────────────────────────────────
+
+def sync_ohlc_data(trades):
+    """Download missing OHLC data for any traded symbols not already in ohlc.json."""
+    ohlc_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ohlc.json')
+    with open(ohlc_path, 'r') as f:
+        ohlc = json.load(f)
+
+    # Collect unique base tickers from trades
+    symbols = set()
+    for t in trades:
+        base = t.symbol.split(' ')[0]
+        symbols.add(base)
+
+    missing = sorted(symbols - set(ohlc.keys()))
+    if not missing:
+        print(f'OHLC sync: all {len(symbols)} traded symbols present')
+        return
+
+    print(f'OHLC sync: {len(missing)} missing symbols to download: {", ".join(missing)}')
+
+    # Use same date range as existing data
+    start_date = '2023-01-03'
+    end_date = _dt.now().strftime('%Y-%m-%d')
+
+    added = 0
+    for sym in missing:
+        try:
+            df = yf.download(sym, start=start_date, end=end_date, auto_adjust=True, progress=False)
+            if df.empty:
+                print(f'  {sym}: no data returned')
+                continue
+            candles = []
+            for d, row in df.iterrows():
+                candles.append({
+                    't': d.strftime('%Y-%m-%d'),
+                    'o': round(float(row['Open'].iloc[0]), 4),
+                    'h': round(float(row['High'].iloc[0]), 4),
+                    'l': round(float(row['Low'].iloc[0]), 4),
+                    'c': round(float(row['Close'].iloc[0]), 4),
+                    'v': int(row['Volume'].iloc[0]),
+                })
+            ohlc[sym] = candles
+            added += 1
+            print(f'  {sym}: {len(candles)} candles')
+        except Exception as e:
+            print(f'  {sym}: download failed: {e}')
+
+    if added > 0:
+        with open(ohlc_path, 'w') as f:
+            json.dump(ohlc, f)
+        print(f'OHLC sync: added {added} symbols, total now {len(ohlc)}')
+
 # ── Regime Stats ──────────────────────────────────────────────────────────────
 
 def compute_regime_stats(regime_trades):
@@ -694,6 +747,10 @@ def main():
     # 5b. Build overlay data (SPX, VIX, MMTH)
     print('\nBuilding overlay data...')
     overlays = build_overlay_data(equity_curve)
+
+    # 5c. Sync OHLC data for any missing symbols
+    print('\nSyncing OHLC data...')
+    sync_ohlc_data(closed)
 
     # 6. Compute regime stats
     regime_stats = compute_regime_stats(regime_trades)
