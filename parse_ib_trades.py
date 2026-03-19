@@ -415,7 +415,7 @@ def get_regime_color(date_str, sorted_periods):
 
 
 def assign_regime_colors(trades, all_regime_periods):
-    """Assign regime colors to trades based on exit date, for each regime definition."""
+    """Assign regime colors to trades based on entry date, for each regime definition."""
     result = {}
     for regime_key, periods in all_regime_periods.items():
         sorted_periods = sorted(periods, key=lambda p: p['start'])
@@ -438,7 +438,7 @@ def assign_regime_colors(trades, all_regime_periods):
                 'strategy': t.strategy,
                 'primaryStrategy': '',
                 'tradeType': '',
-                'regimeColor': get_regime_color(t.exit_date, sorted_periods),
+                'regimeColor': get_regime_color(t.entry_date, sorted_periods),
             }
             regime_trades.append(trade_dict)
         result[regime_key] = regime_trades
