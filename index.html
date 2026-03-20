@@ -206,7 +206,9 @@
   }
   .tt-breakdown-row .tt-count { color: var(--text-dim); font-size: 11px; min-width: 28px; }
   .tt-breakdown-row .tt-pnl { font-weight: 600; font-size: 12px; min-width: 70px; }
-  .tt-breakdown-row .tt-wr { color: var(--text-muted); font-size: 11px; }
+  .tt-breakdown-row .tt-wr { color: var(--text-muted); font-size: 11px; min-width: 30px; }
+  .tt-breakdown-row .tt-er { color: var(--text-dim); font-size: 11px; min-width: 34px; }
+  .tt-breakdown-header { margin-bottom: 2px; }
 
   /* Strategy Performance by Regime section */
   .strategy-perf-section { margin-bottom: 20px; }
@@ -727,8 +729,12 @@ function computeTradeTypeStats(trades) {
     const subset = trades.filter(t => t.tradeType === tt);
     const n = subset.length;
     const totalPnL = subset.reduce((s, t) => s + t.pnl, 0);
-    const winners = subset.filter(t => t.pnl > 0).length;
-    result[tt] = { count: n, totalPnL, winRate: n > 0 ? winners / n : 0 };
+    const wins = subset.filter(t => t.pnl > 0);
+    const losses = subset.filter(t => t.pnl <= 0);
+    const avgWin = wins.length ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0;
+    const avgLoss = losses.length ? Math.abs(losses.reduce((s, t) => s + t.pnl, 0) / losses.length) : 0;
+    const edgeRatio = avgLoss > 0 ? avgWin / avgLoss : 0;
+    result[tt] = { count: n, totalPnL, winRate: n > 0 ? wins.length / n : 0, edgeRatio };
   });
   return result;
 }
@@ -1142,6 +1148,7 @@ function renderRegimeColorCards() {
         <span class="tt-count">${ts.count}</span>
         <span class="tt-pnl ${pnlCls}">${fmtPnL(ts.totalPnL)}</span>
         <span class="tt-wr">${(ts.winRate * 100).toFixed(0)}%</span>
+        <span class="tt-er">${ts.edgeRatio ? ts.edgeRatio.toFixed(2) : '—'}</span>
       </div>`;
     }).filter(Boolean).join('');
     return `
@@ -1158,8 +1165,16 @@ function renderRegimeColorCards() {
           <div class="mini-stat"><div class="mini-label">Edge Ratio</div><div class="mini-value">${edgeRatio ? edgeRatio.toFixed(2) : '—'}</div></div>
           <div class="mini-stat"><div class="mini-label">Avg Hold</div><div class="mini-value">${avgHold ? avgHold.toFixed(1) + 'd' : '—'}</div></div>
           <div class="mini-stat"><div class="mini-label">Best</div><div class="mini-value positive">${fmtPnL(s['Max Win'] || 0)}</div></div>
+          <div class="mini-stat"><div class="mini-label">Worst</div><div class="mini-value negative">${fmtPnL(s['Max Loss'] || 0)}</div></div>
         </div>
-        ${ttHtml ? `<div class="tt-breakdown"><div class="tt-breakdown-label">By Trade Type</div>${ttHtml}</div>` : ''}
+        ${ttHtml ? `<div class="tt-breakdown"><div class="tt-breakdown-label">By Trade Type</div>
+          <div class="tt-breakdown-row tt-breakdown-header">
+            <span class="tt-tag" style="visibility:hidden">A</span>
+            <span class="tt-count" style="color:var(--text-muted);font-size:9.5px">#</span>
+            <span class="tt-pnl" style="color:var(--text-muted);font-size:9.5px">P&L</span>
+            <span class="tt-wr" style="color:var(--text-muted);font-size:9.5px">HIT</span>
+            <span class="tt-er" style="color:var(--text-muted);font-size:9.5px">EDGE</span>
+          </div>${ttHtml}</div>` : ''}
       </div>`;
   }).join('');
   document.getElementById('regime-color-cards').innerHTML = html;
