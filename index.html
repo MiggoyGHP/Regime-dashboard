@@ -648,9 +648,13 @@
     <h2>All Trades</h2>
     <div class="table-controls">
       <input type="text" class="search-input" id="search-input" placeholder="Search symbol...">
-      <div class="multi-select" id="color-multi">
-        <button class="multi-select-btn" id="color-multi-btn">All Colors</button>
-        <div class="multi-select-panel" id="color-multi-panel" style="display:none"></div>
+      <div class="multi-select" id="entry-color-multi">
+        <button class="multi-select-btn" id="entry-color-multi-btn">All Entry Colors</button>
+        <div class="multi-select-panel" id="entry-color-multi-panel" style="display:none"></div>
+      </div>
+      <div class="multi-select" id="exit-color-multi">
+        <button class="multi-select-btn" id="exit-color-multi-btn">All Exit Colors</button>
+        <div class="multi-select-panel" id="exit-color-multi-panel" style="display:none"></div>
       </div>
       <div class="multi-select" id="type-multi">
         <button class="multi-select-btn" id="type-multi-btn">All Types</button>
@@ -687,7 +691,8 @@
             <th data-sort="exit">Exit</th>
             <th data-sort="pnl" class="sorted">P&L</th>
             <th data-sort="fees">Fees</th>
-            <th>Regime</th>
+            <th>Entry</th>
+            <th>Exit</th>
           </tr>
         </thead>
         <tbody id="trades-tbody"></tbody>
@@ -718,6 +723,7 @@ let indicatorState = { ema10: true, ema20: true, ema25: true, ema50: true, ema20
 let sortField = 'pnl', sortDir = -1;
 let searchTerm = '';
 let selectedColors = null;
+let selectedExitColors = null;
 let selectedTypes = null;
 let selectedStrategies = null;
 let selectedTradeTypes = null;
@@ -903,6 +909,7 @@ Promise.all([
 
 function init() {
   selectedColors = new Set(['Green', 'Yellow', 'Red', 'Unknown']);
+  selectedExitColors = new Set(['Green', 'Yellow', 'Red', 'Unknown']);
   selectedTypes = new Set(['Stocks', 'Equity and Index Options']);
   selectedStrategies = new Set([...STRATEGY_VALUES, '(Untagged)']);
   selectedTradeTypes = new Set([...TRADE_TYPE_VALUES, '(Untagged)']);
@@ -1112,9 +1119,13 @@ function setupTableControls() {
     currentPage = 1;
     renderTable();
   });
-  setupMultiSelect('color-multi', ['Green', 'Yellow', 'Red', 'Unknown'],
+  setupMultiSelect('entry-color-multi', ['Green', 'Yellow', 'Red', 'Unknown'],
     v => v, selectedColors, s => { selectedColors = s; currentPage = 1; render(); },
-    'All Colors', 'Colors'
+    'All Entry Colors', 'Entry Colors'
+  );
+  setupMultiSelect('exit-color-multi', ['Green', 'Yellow', 'Red', 'Unknown'],
+    v => v, selectedExitColors, s => { selectedExitColors = s; currentPage = 1; render(); },
+    'All Exit Colors', 'Exit Colors'
   );
   setupMultiSelect('type-multi', ['Stocks', 'Equity and Index Options'],
     v => v === 'Equity and Index Options' ? 'Options' : v,
@@ -1173,6 +1184,10 @@ function setupTableControls() {
 }
 
 function render() {
+  const regimeKey = `regime${currentRegime}`;
+  for (const t of getTrades()) {
+    t.exitRegimeColor = getRegimeColorForDate(t.exitDate, regimeKey);
+  }
   renderSummary();
   renderRegimeColorCards();
   renderStrategyPerformance();
@@ -1192,6 +1207,7 @@ function getStats() { return DATA.regimeStats[`regime${currentRegime}`]; }
 
 function allFiltersSelected() {
   return selectedColors.size === 4 &&
+         selectedExitColors.size === 4 &&
          selectedTypes.size === 2 &&
          selectedStrategies.size === STRATEGY_VALUES.length + 1 &&
          selectedTradeTypes.size === TRADE_TYPE_VALUES.length + 1 &&
@@ -1201,6 +1217,7 @@ function allFiltersSelected() {
 function getFilteredTrades() {
   return getTrades().filter(t =>
     selectedColors.has(t.regimeColor) &&
+    selectedExitColors.has(t.exitRegimeColor) &&
     selectedTypes.has(t.type) &&
     selectedStrategies.has(t.primaryStrategy || '(Untagged)') &&
     selectedTradeTypes.has(t.tradeType || '(Untagged)') &&
@@ -1916,6 +1933,7 @@ function renderTable() {
     (t.tradeType && t.tradeType.toLowerCase().includes(searchTerm))
   );
   filtered = filtered.filter(t => selectedColors.has(t.regimeColor));
+  filtered = filtered.filter(t => selectedExitColors.has(t.exitRegimeColor));
   filtered = filtered.filter(t => selectedTypes.has(t.type));
   filtered = filtered.filter(t => selectedStrategies.has(t.primaryStrategy || '(Untagged)'));
   filtered = filtered.filter(t => selectedTradeTypes.has(t.tradeType || '(Untagged)'));
@@ -1953,6 +1971,7 @@ function renderTable() {
       <td class="${t.pnl >= 0 ? 'positive' : 'negative'}" style="font-weight:600;">${fmtPnL(t.pnl)}</td>
       <td style="color:var(--text-dim);">$${Math.abs(t.fees).toFixed(2)}</td>
       <td><span class="regime-badge badge-${t.regimeColor}">${t.regimeColor}</span></td>
+      <td><span class="regime-badge badge-${t.exitRegimeColor}">${t.exitRegimeColor}</span></td>
     </tr>
   `).join('');
 
