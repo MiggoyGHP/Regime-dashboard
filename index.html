@@ -208,6 +208,7 @@
   .tt-breakdown-row .tt-pnl { font-weight: 600; font-size: 12px; min-width: 70px; }
   .tt-breakdown-row .tt-wr { color: var(--text-muted); font-size: 11px; min-width: 30px; }
   .tt-breakdown-row .tt-er { color: var(--text-dim); font-size: 11px; min-width: 34px; }
+  .tt-breakdown-row .tt-hold { color: var(--text-dim); font-size: 11px; min-width: 34px; }
   .tt-breakdown-header { margin-bottom: 2px; }
 
   /* Strategy Performance by Regime section */
@@ -559,9 +560,10 @@
 <div class="header">
   <h1><div class="header-dot"></div><span>Regime</span> Performance Dashboard</h1>
   <div class="regime-selector">
-    <button class="regime-btn active" data-regime="1">Simple (EMA)</button>
+    <button class="regime-btn active" data-regime="1">Simple 10/20EMAs</button>
     <button class="regime-btn" data-regime="2">MMTH</button>
-    <button class="regime-btn" data-regime="3">CNHNL</button>
+    <button class="regime-btn" data-regime="3">Net Highs vs Net Lows</button>
+    <button class="regime-btn" data-regime="4">Simple 20/50EMAs</button>
   </div>
 </div>
 
@@ -779,7 +781,15 @@ function computeTradeTypeStats(trades) {
     const avgWin = wins.length ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0;
     const avgLoss = losses.length ? Math.abs(losses.reduce((s, t) => s + t.pnl, 0) / losses.length) : 0;
     const edgeRatio = avgLoss > 0 ? avgWin / avgLoss : 0;
-    result[tt] = { count: n, totalPnL, winRate: n > 0 ? wins.length / n : 0, edgeRatio };
+    let holdDays = [];
+    subset.forEach(t => {
+      if (t.entryDate && t.exitDate) {
+        const d = (new Date(t.exitDate) - new Date(t.entryDate)) / 86400000;
+        if (!isNaN(d)) holdDays.push(d);
+      }
+    });
+    const avgHold = holdDays.length ? Math.round((holdDays.reduce((s, d) => s + d, 0) / holdDays.length) * 10) / 10 : 0;
+    result[tt] = { count: n, totalPnL, winRate: n > 0 ? wins.length / n : 0, edgeRatio, avgHold };
   });
   return result;
 }
@@ -1226,18 +1236,26 @@ function computeRegimeStats(trades) {
   const avgWin = winners.length ? winners.reduce((s, t) => s + t.pnl, 0) / winners.length : 0;
   const avgLoss = losers.length ? Math.abs(losers.reduce((s, t) => s + t.pnl, 0) / losers.length) : 0;
   const edgeRatio = avgLoss > 0 ? avgWin / avgLoss : 0;
-  let holdDays = [];
+  let holdDays = [], winHoldDays = [], lossHoldDays = [];
   trades.forEach(t => {
     if (t.entryDate && t.exitDate) {
       const d = (new Date(t.exitDate) - new Date(t.entryDate)) / 86400000;
-      if (!isNaN(d)) holdDays.push(d);
+      if (!isNaN(d)) {
+        holdDays.push(d);
+        if (t.pnl > 0) winHoldDays.push(d);
+        else lossHoldDays.push(d);
+      }
     }
   });
   const avgHold = holdDays.length ? holdDays.reduce((s, d) => s + d, 0) / holdDays.length : 0;
+  const avgWinHold = winHoldDays.length ? winHoldDays.reduce((s, d) => s + d, 0) / winHoldDays.length : 0;
+  const avgLossHold = lossHoldDays.length ? lossHoldDays.reduce((s, d) => s + d, 0) / lossHoldDays.length : 0;
   return {
     '# Trades': n, 'Total P&L': totalPnL, 'Win Rate': n ? winners.length / n : 0,
     'Avg P&L': n ? totalPnL / n : 0, 'Edge Ratio': edgeRatio,
     'Avg Holding Period': Math.round(avgHold * 10) / 10,
+    'Avg Win Hold': Math.round(avgWinHold * 10) / 10,
+    'Avg Loss Hold': Math.round(avgLossHold * 10) / 10,
     'Max Win': Math.max(...pnls), 'Max Loss': Math.min(...pnls),
   };
 }
@@ -1345,6 +1363,8 @@ function renderRegimeColorCards() {
     const avgPnL = s['Avg P&L'];
     const edgeRatio = s['Edge Ratio'];
     const avgHold = s['Avg Holding Period'];
+    const avgWinHold = s['Avg Win Hold'];
+    const avgLossHold = s['Avg Loss Hold'];
     const ttStats = computeTradeTypeStats(colorTrades);
     const ttHtml = TRADE_TYPE_VALUES.map(tt => {
       const ts = ttStats[tt];
@@ -1356,6 +1376,7 @@ function renderRegimeColorCards() {
         <span class="tt-pnl ${pnlCls}">${fmtPnL(ts.totalPnL)}</span>
         <span class="tt-wr">${(ts.winRate * 100).toFixed(0)}%</span>
         <span class="tt-er">${ts.edgeRatio ? ts.edgeRatio.toFixed(2) : '—'}</span>
+        <span class="tt-hold">${ts.avgHold ? ts.avgHold.toFixed(1) + 'd' : '—'}</span>
       </div>`;
     }).filter(Boolean).join('');
     return `
@@ -1371,6 +1392,8 @@ function renderRegimeColorCards() {
           <div class="mini-stat"><div class="mini-label">Avg P&L</div><div class="mini-value ${avgPnL >= 0 ? 'positive' : 'negative'}">${fmtPnL(avgPnL)}</div></div>
           <div class="mini-stat"><div class="mini-label">Edge Ratio</div><div class="mini-value">${edgeRatio ? edgeRatio.toFixed(2) : '—'}</div></div>
           <div class="mini-stat"><div class="mini-label">Avg Hold</div><div class="mini-value">${avgHold ? avgHold.toFixed(1) + 'd' : '—'}</div></div>
+          <div class="mini-stat"><div class="mini-label">Avg Win Hold</div><div class="mini-value">${avgWinHold ? avgWinHold.toFixed(1) + 'd' : '—'}</div></div>
+          <div class="mini-stat"><div class="mini-label">Avg Loss Hold</div><div class="mini-value">${avgLossHold ? avgLossHold.toFixed(1) + 'd' : '—'}</div></div>
           <div class="mini-stat"><div class="mini-label">Best</div><div class="mini-value positive">${fmtPnL(s['Max Win'] || 0)}</div></div>
           <div class="mini-stat"><div class="mini-label">Worst</div><div class="mini-value negative">${fmtPnL(s['Max Loss'] || 0)}</div></div>
         </div>
@@ -1381,6 +1404,7 @@ function renderRegimeColorCards() {
             <span class="tt-pnl" style="color:var(--text-muted);font-size:9.5px">P&L</span>
             <span class="tt-wr" style="color:var(--text-muted);font-size:9.5px">HIT</span>
             <span class="tt-er" style="color:var(--text-muted);font-size:9.5px">EDGE</span>
+            <span class="tt-hold" style="color:var(--text-muted);font-size:9.5px">HOLD</span>
           </div>${ttHtml}</div>` : ''}
       </div>`;
   }).join('');

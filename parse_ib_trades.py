@@ -756,7 +756,7 @@ def main():
     regime_stats = compute_regime_stats(regime_trades)
 
     # Print summary per regime
-    for rk in ['regime1', 'regime2', 'regime3']:
+    for rk in sorted(regime_stats.keys()):
         all_stats = regime_stats[rk].get('All', {})
         n = all_stats.get('# Trades', 0)
         pnl = all_stats.get('Total P&L', 0)
