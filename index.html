@@ -391,6 +391,61 @@
     transition: all 0.2s ease; cursor: pointer;
   }
   .sort-select:focus { outline: none; border-color: var(--blue); }
+
+  /* Multi-select checkbox dropdowns */
+  .multi-select { position: relative; display: inline-block; }
+  .multi-select-btn {
+    padding: 7px 12px; border-radius: var(--radius-xs); border: 1px solid var(--border);
+    background: var(--bg-subtle); color: var(--text); font-size: 12px;
+    cursor: pointer; transition: all 0.2s ease; white-space: nowrap;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .multi-select-btn::after { content: '\25BE'; font-size: 10px; color: var(--text-dim); }
+  .multi-select-btn:hover, .multi-select-btn.open { border-color: var(--blue); }
+  .multi-select-btn.open { box-shadow: 0 0 0 2px rgba(99,102,241,0.12); }
+  .multi-select-btn.filtered { border-color: var(--blue); color: var(--blue-bright); }
+  .multi-select-panel {
+    position: absolute; top: 100%; left: 0; z-index: 100; margin-top: 4px;
+    background: var(--card-elevated); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 6px 0;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+    min-width: 180px; max-height: 300px; overflow-y: auto;
+    backdrop-filter: blur(12px);
+  }
+  .multi-select-panel label {
+    display: flex; align-items: center; gap: 8px; padding: 5px 14px;
+    cursor: pointer; font-size: 12px; transition: background 0.1s;
+    white-space: nowrap; user-select: none;
+  }
+  .multi-select-panel label:hover { background: var(--card-hover); }
+  .multi-select-panel label.select-all {
+    border-bottom: 1px solid var(--border); margin-bottom: 2px; padding-bottom: 7px;
+    font-weight: 600; color: var(--text-dim); font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .multi-select-panel input[type="checkbox"] {
+    accent-color: var(--blue); width: 14px; height: 14px; cursor: pointer;
+  }
+
+  /* Date range filter */
+  .date-range-filter {
+    display: flex; align-items: center; gap: 6px;
+  }
+  .date-input {
+    padding: 6px 10px; border-radius: var(--radius-xs); border: 1px solid var(--border);
+    background: var(--bg-subtle); color: var(--text); font-size: 12px;
+    font-family: inherit; transition: all 0.2s ease; width: 130px;
+  }
+  .date-input:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 2px rgba(99,102,241,0.12); }
+  .date-input::-webkit-calendar-picker-indicator { filter: invert(0.7); cursor: pointer; }
+  .date-input.active { border-color: var(--blue); color: var(--blue-bright); }
+  .date-clear-btn {
+    background: none; border: 1px solid var(--border); border-radius: 50%;
+    color: var(--text-dim); cursor: pointer; font-size: 14px; width: 22px; height: 22px;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s ease; line-height: 1;
+  }
+  .date-clear-btn:hover { border-color: var(--red); color: var(--red); }
   table {
     width: 100%; border-collapse: collapse; font-size: 12.5px;
     font-variant-numeric: tabular-nums;
@@ -591,40 +646,28 @@
     <h2>All Trades</h2>
     <div class="table-controls">
       <input type="text" class="search-input" id="search-input" placeholder="Search symbol...">
-      <select class="sort-select" id="color-filter-table">
-        <option value="all">All Colors</option>
-        <option value="Green">Green</option>
-        <option value="Yellow">Yellow</option>
-        <option value="Red">Red</option>
-        <option value="Unknown">Unknown</option>
-      </select>
-      <select class="sort-select" id="type-filter-table">
-        <option value="all">All Types</option>
-        <option value="Stocks">Stocks</option>
-        <option value="Equity and Index Options">Options</option>
-      </select>
-      <select class="sort-select" id="strategy-filter-table">
-        <option value="all">All Strategies</option>
-        <option value="Bluesky">Bluesky</option>
-        <option value="Capitulation">Capitulation</option>
-        <option value="Coil">Coil</option>
-        <option value="IPO">IPO</option>
-        <option value="Intraday Price Action">Intraday</option>
-        <option value="Momentum">Momentum</option>
-        <option value="Others">Others</option>
-        <option value="Pullback">Pullback</option>
-        <option value="Range">Range</option>
-        <option value="Reset">Reset</option>
-        <option value="Reversal">Reversal</option>
-        <option value="">(Untagged)</option>
-      </select>
-      <select class="sort-select" id="tradetype-filter-table">
-        <option value="all">All Trade Types</option>
-        <option value="Trade A">Trade A</option>
-        <option value="Trade B">Trade B</option>
-        <option value="Trade E">Trade E</option>
-        <option value="">(Untagged)</option>
-      </select>
+      <div class="multi-select" id="color-multi">
+        <button class="multi-select-btn" id="color-multi-btn">All Colors</button>
+        <div class="multi-select-panel" id="color-multi-panel" style="display:none"></div>
+      </div>
+      <div class="multi-select" id="type-multi">
+        <button class="multi-select-btn" id="type-multi-btn">All Types</button>
+        <div class="multi-select-panel" id="type-multi-panel" style="display:none"></div>
+      </div>
+      <div class="multi-select" id="strategy-multi">
+        <button class="multi-select-btn" id="strategy-multi-btn">All Strategies</button>
+        <div class="multi-select-panel" id="strategy-multi-panel" style="display:none"></div>
+      </div>
+      <div class="multi-select" id="tradetype-multi">
+        <button class="multi-select-btn" id="tradetype-multi-btn">All Trade Types</button>
+        <div class="multi-select-panel" id="tradetype-multi-panel" style="display:none"></div>
+      </div>
+      <div class="date-range-filter">
+        <input type="date" class="date-input" id="date-from" placeholder="From">
+        <span style="color:var(--text-muted);font-size:11px;">to</span>
+        <input type="date" class="date-input" id="date-to" placeholder="To">
+        <button class="date-clear-btn" id="date-clear" style="display:none" title="Clear dates">&times;</button>
+      </div>
     </div>
     <div style="overflow-x:auto;">
       <table>
@@ -672,10 +715,12 @@ let macdLineSeries, macdSignalSeries, macdHistSeries;
 let indicatorState = { ema10: true, ema20: true, ema25: true, ema50: true, ema200: true, macd: true };
 let sortField = 'pnl', sortDir = -1;
 let searchTerm = '';
-let tableColorFilter = 'all';
-let tableTypeFilter = 'all';
-let tableStrategyFilter = 'all';
-let tableTradeTypeFilter = 'all';
+let selectedColors = null;
+let selectedTypes = null;
+let selectedStrategies = null;
+let selectedTradeTypes = null;
+let dateFrom = '';
+let dateTo = '';
 let currentPage = 1;
 const PAGE_SIZE = 20;
 const CANDLES_BEFORE = 120;
@@ -847,6 +892,10 @@ Promise.all([
 ]).then(([d, o]) => { DATA = d; OHLC = o; applyTagOverrides(); init(); });
 
 function init() {
+  selectedColors = new Set(['Green', 'Yellow', 'Red', 'Unknown']);
+  selectedTypes = new Set(['Stocks', 'Equity and Index Options']);
+  selectedStrategies = new Set([...STRATEGY_VALUES, '(Untagged)']);
+  selectedTradeTypes = new Set([...TRADE_TYPE_VALUES, '(Untagged)']);
   setupRegimeButtons();
   setupColorFilter();
   setupIndicatorToggles();
@@ -978,31 +1027,127 @@ function applyIndicatorVisibility() {
   }
 }
 
+function setupMultiSelect(containerId, values, labelFn, currentSet, onChange, allLabel, pluralLabel) {
+  const btn = document.getElementById(containerId + '-btn');
+  const panel = document.getElementById(containerId + '-panel');
+
+  // Build panel HTML
+  let html = `<label class="select-all"><input type="checkbox" data-select-all checked> Select All</label>`;
+  values.forEach(v => {
+    html += `<label><input type="checkbox" value="${v}" checked> ${labelFn(v)}</label>`;
+  });
+  panel.innerHTML = html;
+
+  const selectAllCb = panel.querySelector('[data-select-all]');
+  const itemCbs = panel.querySelectorAll('input[type="checkbox"]:not([data-select-all])');
+
+  function updateBtn() {
+    const total = values.length;
+    const checked = currentSet.size;
+    if (checked === total) {
+      btn.textContent = allLabel;
+      btn.classList.remove('filtered');
+    } else {
+      btn.textContent = `${checked} of ${total} ${pluralLabel}`;
+      btn.classList.add('filtered');
+    }
+  }
+
+  itemCbs.forEach(cb => {
+    cb.addEventListener('change', () => {
+      if (cb.checked) currentSet.add(cb.value);
+      else currentSet.delete(cb.value);
+      selectAllCb.checked = currentSet.size === values.length;
+      selectAllCb.indeterminate = currentSet.size > 0 && currentSet.size < values.length;
+      updateBtn();
+      onChange(currentSet);
+    });
+  });
+
+  selectAllCb.addEventListener('change', () => {
+    itemCbs.forEach(cb => {
+      cb.checked = selectAllCb.checked;
+      if (selectAllCb.checked) currentSet.add(cb.value);
+      else currentSet.delete(cb.value);
+    });
+    selectAllCb.indeterminate = false;
+    updateBtn();
+    onChange(currentSet);
+  });
+
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    const isOpen = panel.style.display !== 'none';
+    // Close all panels first
+    document.querySelectorAll('.multi-select-panel').forEach(p => { p.style.display = 'none'; });
+    document.querySelectorAll('.multi-select-btn').forEach(b => b.classList.remove('open'));
+    if (!isOpen) {
+      panel.style.display = 'block';
+      btn.classList.add('open');
+    }
+  });
+
+  panel.addEventListener('click', e => e.stopPropagation());
+}
+
+// Close multi-select panels on outside click
+document.addEventListener('click', () => {
+  document.querySelectorAll('.multi-select-panel').forEach(p => { p.style.display = 'none'; });
+  document.querySelectorAll('.multi-select-btn').forEach(b => b.classList.remove('open'));
+});
+
 function setupTableControls() {
   document.getElementById('search-input').addEventListener('input', e => {
     searchTerm = e.target.value.toLowerCase();
     currentPage = 1;
     renderTable();
   });
-  document.getElementById('color-filter-table').addEventListener('change', e => {
-    tableColorFilter = e.target.value;
+  setupMultiSelect('color-multi', ['Green', 'Yellow', 'Red', 'Unknown'],
+    v => v, selectedColors, s => { selectedColors = s; currentPage = 1; render(); },
+    'All Colors', 'Colors'
+  );
+  setupMultiSelect('type-multi', ['Stocks', 'Equity and Index Options'],
+    v => v === 'Equity and Index Options' ? 'Options' : v,
+    selectedTypes, s => { selectedTypes = s; currentPage = 1; render(); },
+    'All Types', 'Types'
+  );
+  setupMultiSelect('strategy-multi', [...STRATEGY_VALUES, '(Untagged)'],
+    v => v === 'Intraday Price Action' ? 'Intraday' : v,
+    selectedStrategies, s => { selectedStrategies = s; currentPage = 1; render(); },
+    'All Strategies', 'Strategies'
+  );
+  setupMultiSelect('tradetype-multi', [...TRADE_TYPE_VALUES, '(Untagged)'],
+    v => v.startsWith('Trade ') ? v.replace('Trade ', '') : v,
+    selectedTradeTypes, s => { selectedTradeTypes = s; currentPage = 1; render(); },
+    'All Trade Types', 'Trade Types'
+  );
+  // Date range filter
+  const dateFromEl = document.getElementById('date-from');
+  const dateToEl = document.getElementById('date-to');
+  const dateClearEl = document.getElementById('date-clear');
+  function updateDateFilter() {
+    dateFrom = dateFromEl.value;
+    dateTo = dateToEl.value;
+    dateFromEl.classList.toggle('active', !!dateFrom);
+    dateToEl.classList.toggle('active', !!dateTo);
+    dateClearEl.style.display = (dateFrom || dateTo) ? 'flex' : 'none';
     currentPage = 1;
-    renderTable();
-  });
-  document.getElementById('type-filter-table').addEventListener('change', e => {
-    tableTypeFilter = e.target.value;
-    currentPage = 1;
-    renderTable();
-  });
-  document.getElementById('strategy-filter-table').addEventListener('change', e => {
-    tableStrategyFilter = e.target.value;
-    currentPage = 1;
-    renderTable();
-  });
-  document.getElementById('tradetype-filter-table').addEventListener('change', e => {
-    tableTradeTypeFilter = e.target.value;
-    currentPage = 1;
-    renderTable();
+    render();
+    // Zoom equity chart to date range if both dates set
+    if (dateFrom && dateTo) {
+      try {
+        equityChart.timeScale().setVisibleRange({ from: dateFrom, to: dateTo });
+      } catch(e) {}
+    } else if (!dateFrom && !dateTo) {
+      equityChart.timeScale().fitContent();
+    }
+  }
+  dateFromEl.addEventListener('change', updateDateFilter);
+  dateToEl.addEventListener('change', updateDateFilter);
+  dateClearEl.addEventListener('click', () => {
+    dateFromEl.value = '';
+    dateToEl.value = '';
+    updateDateFilter();
   });
   document.querySelectorAll('thead th[data-sort]').forEach(th => {
     th.addEventListener('click', () => {
@@ -1034,6 +1179,68 @@ function render() {
 
 function getTrades() { return DATA.regimeTrades[`regime${currentRegime}`]; }
 function getStats() { return DATA.regimeStats[`regime${currentRegime}`]; }
+
+function allFiltersSelected() {
+  return selectedColors.size === 4 &&
+         selectedTypes.size === 2 &&
+         selectedStrategies.size === STRATEGY_VALUES.length + 1 &&
+         selectedTradeTypes.size === TRADE_TYPE_VALUES.length + 1 &&
+         !dateFrom && !dateTo;
+}
+
+function getFilteredTrades() {
+  return getTrades().filter(t =>
+    selectedColors.has(t.regimeColor) &&
+    selectedTypes.has(t.type) &&
+    selectedStrategies.has(t.primaryStrategy || '(Untagged)') &&
+    selectedTradeTypes.has(t.tradeType || '(Untagged)') &&
+    (!dateFrom || t.entryDate >= dateFrom) &&
+    (!dateTo || t.entryDate <= dateTo)
+  );
+}
+
+function buildEquityCurve(trades) {
+  const sorted = [...trades].sort((a, b) => a.exitDate.localeCompare(b.exitDate));
+  // Aggregate trades by exitDate (TradingView requires unique timestamps)
+  const byDate = new Map();
+  sorted.forEach(t => {
+    byDate.set(t.exitDate, (byDate.get(t.exitDate) || 0) + t.pnl);
+  });
+  let cumPnL = 0, peak = 0;
+  const result = [];
+  for (const [date, dayPnL] of byDate) {
+    cumPnL += dayPnL;
+    peak = Math.max(peak, cumPnL);
+    result.push({ date, cumPnL, drawdown: cumPnL - peak });
+  }
+  return result;
+}
+
+function computeRegimeStats(trades) {
+  const n = trades.length;
+  if (n === 0) return { '# Trades': 0, 'Total P&L': 0, 'Win Rate': 0, 'Avg P&L': 0, 'Edge Ratio': 0, 'Avg Holding Period': 0, 'Max Win': 0, 'Max Loss': 0 };
+  const pnls = trades.map(t => t.pnl);
+  const totalPnL = pnls.reduce((s, p) => s + p, 0);
+  const winners = trades.filter(t => t.pnl > 0);
+  const losers = trades.filter(t => t.pnl <= 0);
+  const avgWin = winners.length ? winners.reduce((s, t) => s + t.pnl, 0) / winners.length : 0;
+  const avgLoss = losers.length ? Math.abs(losers.reduce((s, t) => s + t.pnl, 0) / losers.length) : 0;
+  const edgeRatio = avgLoss > 0 ? avgWin / avgLoss : 0;
+  let holdDays = [];
+  trades.forEach(t => {
+    if (t.entryDate && t.exitDate) {
+      const d = (new Date(t.exitDate) - new Date(t.entryDate)) / 86400000;
+      if (!isNaN(d)) holdDays.push(d);
+    }
+  });
+  const avgHold = holdDays.length ? holdDays.reduce((s, d) => s + d, 0) / holdDays.length : 0;
+  return {
+    '# Trades': n, 'Total P&L': totalPnL, 'Win Rate': n ? winners.length / n : 0,
+    'Avg P&L': n ? totalPnL / n : 0, 'Edge Ratio': edgeRatio,
+    'Avg Holding Period': Math.round(avgHold * 10) / 10,
+    'Max Win': Math.max(...pnls), 'Max Loss': Math.min(...pnls),
+  };
+}
 
 function fmt(n, decimals = 0) {
   if (n === undefined || n === null) return '—';
@@ -1093,19 +1300,21 @@ function calcMACD(closes, fast = 12, slow = 26, signal = 9) {
 }
 
 function renderSummary() {
-  const stats = getStats();
-  const all = stats.All || {};
-  const trades = getTrades();
+  const trades = getFilteredTrades();
+  const n = trades.length;
   const winners = trades.filter(t => t.pnl > 0).length;
   const totalPnL = trades.reduce((s, t) => s + t.pnl, 0);
-  const avgPnL = trades.length ? totalPnL / trades.length : 0;
-  const bestTrade = Math.max(...trades.map(t => t.pnl));
-  const worstTrade = Math.min(...trades.map(t => t.pnl));
+  const avgPnL = n ? totalPnL / n : 0;
+  const sortedPnls = trades.map(t => t.pnl).sort((a, b) => a - b);
+  const medianPnL = n ? sortedPnls[Math.floor(n / 2)] : 0;
+  const bestTrade = n ? Math.max(...sortedPnls) : 0;
+  const worstTrade = n ? Math.min(...sortedPnls) : 0;
+  const wr = n ? winners / n : 0;
 
   const html = [
-    { label: 'Total P&L', value: fmtPnL(totalPnL), cls: totalPnL >= 0 ? 'positive' : 'negative', sub: `${trades.length} trades` },
-    { label: 'Avg P&L / Trade', value: fmtPnL(avgPnL), cls: avgPnL >= 0 ? 'positive' : 'negative', sub: `Median: ${fmtPnL(all['Median P&L'] || 0)}` },
-    { label: 'Win Rate', value: (winners / trades.length * 100).toFixed(1) + '%', cls: winners / trades.length >= 0.5 ? 'positive' : 'negative', sub: `${winners}W / ${trades.length - winners}L` },
+    { label: 'Total P&L', value: fmtPnL(totalPnL), cls: totalPnL >= 0 ? 'positive' : 'negative', sub: `${n} trades` },
+    { label: 'Avg P&L / Trade', value: fmtPnL(avgPnL), cls: avgPnL >= 0 ? 'positive' : 'negative', sub: `Median: ${fmtPnL(medianPnL)}` },
+    { label: 'Win Rate', value: (wr * 100).toFixed(1) + '%', cls: wr >= 0.5 ? 'positive' : 'negative', sub: `${winners}W / ${n - winners}L` },
     { label: 'Best Trade', value: fmtPnL(bestTrade), cls: 'positive', sub: trades.find(t => t.pnl === bestTrade)?.symbol || '' },
     { label: 'Worst Trade', value: fmtPnL(worstTrade), cls: 'negative', sub: trades.find(t => t.pnl === worstTrade)?.symbol || '' },
   ].map(c => `
@@ -1119,8 +1328,7 @@ function renderSummary() {
 }
 
 function renderRegimeColorCards() {
-  const stats = getStats();
-  const trades = getTrades();
+  const trades = getFilteredTrades();
   const colors = [
     { key: 'Green', cls: 'green-card', dotColor: 'var(--green)' },
     { key: 'Yellow', cls: 'yellow-card', dotColor: 'var(--yellow)' },
@@ -1129,15 +1337,14 @@ function renderRegimeColorCards() {
   ];
   const ttLabels = { 'Trade A': 'A', 'Trade B': 'B', 'Trade E': 'E' };
   const html = colors.map(c => {
-    const s = stats[c.key] || {};
-    const totalPnL = s['Total P&L'] || 0;
-    const nTrades = s['# Trades'] || 0;
-    const winRate = s['Win Rate'] || 0;
-    const avgPnL = s['Avg P&L'] || 0;
-    const edgeRatio = s['Edge Ratio'] || 0;
-    const avgHold = s['Avg Holding Period'] || 0;
-    // Compute trade type breakdown from live trades
     const colorTrades = trades.filter(t => t.regimeColor === c.key);
+    const s = computeRegimeStats(colorTrades);
+    const totalPnL = s['Total P&L'];
+    const nTrades = s['# Trades'];
+    const winRate = s['Win Rate'];
+    const avgPnL = s['Avg P&L'];
+    const edgeRatio = s['Edge Ratio'];
+    const avgHold = s['Avg Holding Period'];
     const ttStats = computeTradeTypeStats(colorTrades);
     const ttHtml = TRADE_TYPE_VALUES.map(tt => {
       const ts = ttStats[tt];
@@ -1181,7 +1388,7 @@ function renderRegimeColorCards() {
 }
 
 function renderStrategyPerformance() {
-  const trades = getTrades();
+  const trades = getFilteredTrades();
   const regimes = [
     { color: 'Green', cls: 'panel-green', dotColor: 'var(--green)' },
     { color: 'Yellow', cls: 'panel-yellow', dotColor: 'var(--yellow)' },
@@ -1305,17 +1512,19 @@ function buildRegimeBandData(dates, regimeKey) {
   return bands;
 }
 
+function getEquityCurveData() {
+  if (allFiltersSelected()) return DATA.equityCurve;
+  return buildEquityCurve(getFilteredTrades());
+}
+
 function renderEquityChart() {
-  const ec = DATA.equityCurve;
+  const ec = getEquityCurveData();
   const regimeKey = 'regime' + currentRegime;
-  // Set equity line data
   equityLineSeries.setData(ec.map(e => ({ time: e.date, value: e.cumPnL })));
-  // Set background band data
   const bands = buildRegimeBandData(ec.map(e => e.date), regimeKey);
   for (const color of ['Green', 'Yellow', 'Red']) {
     equityBandSeries[color].setData(bands[color]);
   }
-  // Set overlay data (SPX, VIX, MMTH)
   const overlays = DATA.overlays || {};
   for (const key of Object.keys(OVERLAY_CONFIG)) {
     if (overlays[key] && overlaySeries[key]) overlaySeries[key].setData(overlays[key]);
@@ -1352,10 +1561,9 @@ function createDrawdownChart() {
 }
 
 function renderDrawdownChart() {
-  const ec = DATA.equityCurve;
+  const ec = getEquityCurveData();
   const regimeKey = 'regime' + currentRegime;
   drawdownSeries.setData(ec.map(e => ({ time: e.date, value: e.drawdown })));
-  // Set drawdown background bands
   const bands = buildRegimeBandData(ec.map(e => e.date), regimeKey);
   for (const color of ['Green', 'Yellow', 'Red']) {
     drawdownBandSeries[color].setData(bands[color]);
@@ -1388,7 +1596,7 @@ function syncEquityDrawdown() {
 }
 
 function renderPerformers() {
-  const trades = getTrades();
+  const trades = getFilteredTrades();
   const filtered = currentColorFilter === 'all' ? trades : trades.filter(t => t.regimeColor === currentColorFilter);
   const sorted = [...filtered].sort((a, b) => b.pnl - a.pnl);
   renderPerformerList('top-performers', sorted.slice(0, 5), 'top');
@@ -1683,10 +1891,12 @@ function renderTable() {
     (t.primaryStrategy && t.primaryStrategy.toLowerCase().includes(searchTerm)) ||
     (t.tradeType && t.tradeType.toLowerCase().includes(searchTerm))
   );
-  if (tableColorFilter !== 'all') filtered = filtered.filter(t => t.regimeColor === tableColorFilter);
-  if (tableTypeFilter !== 'all') filtered = filtered.filter(t => t.type === tableTypeFilter);
-  if (tableStrategyFilter !== 'all') filtered = filtered.filter(t => t.primaryStrategy === tableStrategyFilter);
-  if (tableTradeTypeFilter !== 'all') filtered = filtered.filter(t => t.tradeType === tableTradeTypeFilter);
+  filtered = filtered.filter(t => selectedColors.has(t.regimeColor));
+  filtered = filtered.filter(t => selectedTypes.has(t.type));
+  filtered = filtered.filter(t => selectedStrategies.has(t.primaryStrategy || '(Untagged)'));
+  filtered = filtered.filter(t => selectedTradeTypes.has(t.tradeType || '(Untagged)'));
+  if (dateFrom) filtered = filtered.filter(t => t.entryDate >= dateFrom);
+  if (dateTo) filtered = filtered.filter(t => t.entryDate <= dateTo);
 
   filtered.sort((a, b) => {
     let va = a[sortField], vb = b[sortField];
