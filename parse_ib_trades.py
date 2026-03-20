@@ -665,15 +665,15 @@ def compute_regime_stats(regime_trades):
             regime_stats[color] = {
                 '# Trades': n,
                 'Total P&L': round(total_pnl, 2),
-                'Avg P&L per Trade': round(total_pnl / n, 2) if n else 0,
-                'Median P&L': round(sorted(pnls)[n // 2], 2) if n else 0,
                 'Win Rate': round(len(winners) / n, 4) if n else 0,
-                '# Winners': len(winners),
-                '# Losers': len(losers),
-                'Best Trade': round(max(pnls), 2) if pnls else 0,
-                'Worst Trade': round(min(pnls), 2) if pnls else 0,
+                'Avg P&L': round(total_pnl / n, 2) if n else 0,
+                'Avg Win': round(avg_win, 2),
+                'Avg Loss': round(-avg_loss, 2),
                 'Edge Ratio': edge_ratio,
-                'Avg Holding Days': avg_hold,
+                'Max Win': round(max(pnls), 2) if pnls else 0,
+                'Max Loss': round(min(pnls), 2) if pnls else 0,
+                'Median P&L': round(sorted(pnls)[n // 2], 2) if n else 0,
+                'Avg Holding Period': avg_hold,
             }
 
         stats[regime_key] = regime_stats

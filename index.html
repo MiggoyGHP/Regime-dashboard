@@ -7,190 +7,306 @@
 <script src="lightweight-charts.js"></script>
 <style>
   :root {
-    --bg: #0f1117;
-    --card: #1a1d29;
-    --card-hover: #22263a;
-    --border: #2a2e3d;
-    --text: #e1e4eb;
-    --text-dim: #8b8fa3;
-    --green: #22c55e;
-    --green-bg: rgba(34,197,94,0.12);
-    --yellow: #eab308;
-    --yellow-bg: rgba(234,179,8,0.12);
+    --bg: #0a0c10;
+    --bg-subtle: #0f1218;
+    --card: #13161f;
+    --card-hover: #1a1e2e;
+    --card-elevated: #181c28;
+    --border: #1e2231;
+    --border-subtle: #171b27;
+    --text: #e8eaf0;
+    --text-dim: #6b7189;
+    --text-muted: #4a4f64;
+    --green: #10b981;
+    --green-bright: #34d399;
+    --green-bg: rgba(16,185,129,0.10);
+    --yellow: #f59e0b;
+    --yellow-bright: #fbbf24;
+    --yellow-bg: rgba(245,158,11,0.10);
     --red: #ef4444;
-    --red-bg: rgba(239,68,68,0.12);
-    --blue: #3b82f6;
-    --blue-bg: rgba(59,130,246,0.12);
+    --red-bright: #f87171;
+    --red-bg: rgba(239,68,68,0.10);
+    --blue: #6366f1;
+    --blue-bright: #818cf8;
+    --blue-bg: rgba(99,102,241,0.10);
     --unknown: #6b7280;
-    --unknown-bg: rgba(107,114,128,0.12);
+    --unknown-bg: rgba(107,114,128,0.10);
+    --glow: rgba(99,102,241,0.15);
+    --radius: 12px;
+    --radius-sm: 8px;
+    --radius-xs: 6px;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: var(--bg); color: var(--text);
     overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background-image: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(99,102,241,0.05) 0%, transparent 70%);
+    min-height: 100vh;
   }
+  /* Scrollbar styling */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
   .header {
-    padding: 24px 32px 16px;
+    padding: 16px 32px;
     display: flex; align-items: center; justify-content: space-between;
+    background: linear-gradient(180deg, rgba(99,102,241,0.05) 0%, var(--bg) 100%);
     border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 50;
+    backdrop-filter: blur(20px) saturate(1.2);
+    -webkit-backdrop-filter: blur(20px) saturate(1.2);
   }
-  .header h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.5px; }
-  .header h1 span { color: var(--blue); }
+  .header h1 { font-size: 18px; font-weight: 700; letter-spacing: -0.5px; display: flex; align-items: center; gap: 10px; }
+  .header h1 span {
+    background: linear-gradient(135deg, var(--blue) 0%, var(--blue-bright) 100%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .header-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--green); box-shadow: 0 0 8px var(--green);
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .stat-card, .regime-color-card, .strategy-panel, .chart-section,
+  .performers-section, .trades-table-section, .trade-detail {
+    animation: fadeInUp 0.4s ease-out backwards;
+  }
+  .stat-card:nth-child(1) { animation-delay: 0.02s; }
+  .stat-card:nth-child(2) { animation-delay: 0.06s; }
+  .stat-card:nth-child(3) { animation-delay: 0.10s; }
+  .stat-card:nth-child(4) { animation-delay: 0.14s; }
+  .stat-card:nth-child(5) { animation-delay: 0.18s; }
+  .regime-color-card:nth-child(1) { animation-delay: 0.08s; }
+  .regime-color-card:nth-child(2) { animation-delay: 0.12s; }
+  .regime-color-card:nth-child(3) { animation-delay: 0.16s; }
+  .regime-color-card:nth-child(4) { animation-delay: 0.20s; }
+
+  /* Section titles */
+  .section-title {
+    font-size: 14px; font-weight: 600; letter-spacing: -0.3px;
+    margin-bottom: 12px; color: var(--text);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .section-title .section-icon {
+    width: 20px; height: 20px; border-radius: var(--radius-xs);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; background: var(--blue-bg); color: var(--blue-bright);
+  }
   .regime-selector {
-    display: flex; gap: 6px; background: var(--card); border-radius: 8px; padding: 4px;
+    display: flex; gap: 2px; background: var(--card); border-radius: 10px; padding: 3px;
+    border: 1px solid var(--border);
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.2);
   }
   .regime-btn {
-    padding: 8px 18px; border: none; border-radius: 6px;
+    padding: 7px 20px; border: none; border-radius: 8px;
     background: transparent; color: var(--text-dim); cursor: pointer;
-    font-size: 13px; font-weight: 500; transition: all 0.2s;
+    font-size: 12px; font-weight: 600; transition: all 0.25s ease;
+    letter-spacing: -0.1px; position: relative;
   }
-  .regime-btn.active { background: var(--blue); color: #fff; }
-  .regime-btn:hover:not(.active) { color: var(--text); background: var(--card-hover); }
+  .regime-btn.active {
+    background: linear-gradient(135deg, var(--blue) 0%, #4f46e5 100%);
+    color: #fff; box-shadow: 0 2px 10px rgba(99,102,241,0.35);
+  }
+  .regime-btn:hover:not(.active) { color: var(--text); background: rgba(255,255,255,0.04); }
 
-  .content { padding: 20px 32px; }
+  .content { padding: 24px 32px 40px; }
 
   /* Summary cards */
   .summary-row {
-    display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px;
+    display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px;
     margin-bottom: 20px;
   }
   .stat-card {
-    background: var(--card); border-radius: 10px; padding: 16px 18px;
-    border: 1px solid var(--border); transition: border-color 0.2s;
+    background: linear-gradient(145deg, var(--card) 0%, var(--card-elevated) 100%);
+    border-radius: var(--radius); padding: 18px 20px;
+    border: 1px solid var(--border); transition: all 0.3s ease;
+    position: relative; overflow: hidden;
   }
-  .stat-card:hover { border-color: var(--blue); }
-  .stat-card .label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
-  .stat-card .value { font-size: 22px; font-weight: 700; }
-  .stat-card .sub { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+  .stat-card::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg, var(--blue) 0%, var(--blue-bright) 100%);
+    opacity: 0; transition: opacity 0.3s ease;
+  }
+  .stat-card:hover { border-color: rgba(99,102,241,0.3); transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
+  .stat-card:hover::before { opacity: 1; }
+  .stat-card:nth-child(1)::before { background: linear-gradient(90deg, var(--blue) 0%, var(--blue-bright) 100%); opacity: 1; }
+  .stat-card:nth-child(4)::before { background: linear-gradient(90deg, var(--green) 0%, var(--green-bright) 100%); opacity: 0.7; }
+  .stat-card:nth-child(5)::before { background: linear-gradient(90deg, var(--red) 0%, var(--red-bright) 100%); opacity: 0.7; }
+  .stat-card .label { font-size: 10.5px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; font-weight: 500; }
+  .stat-card .value { font-size: 24px; font-weight: 700; letter-spacing: -0.5px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .stat-card .sub { font-size: 11.5px; color: var(--text-muted); margin-top: 6px; }
   .positive { color: var(--green); }
   .negative { color: var(--red); }
+  .stat-card:first-child .value.positive { text-shadow: 0 0 20px rgba(16,185,129,0.3); }
+  .stat-card:first-child .value.negative { text-shadow: 0 0 20px rgba(239,68,68,0.3); }
 
   /* Regime color stats */
   .regime-stats-row {
-    display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
     margin-bottom: 20px;
   }
   .regime-color-card {
-    background: var(--card); border-radius: 10px; padding: 16px 18px;
-    border: 1px solid var(--border); border-left: 4px solid;
+    background: linear-gradient(145deg, var(--card) 0%, var(--card-elevated) 100%);
+    border-radius: var(--radius); padding: 18px 20px;
+    border: 1px solid var(--border); border-left: 3px solid;
+    transition: all 0.3s ease; position: relative;
   }
-  .regime-color-card.green-card { border-left-color: var(--green); }
-  .regime-color-card.yellow-card { border-left-color: var(--yellow); }
-  .regime-color-card.red-card { border-left-color: var(--red); }
+  .regime-color-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
+  .regime-color-card.green-card { border-left-color: var(--green); background: linear-gradient(145deg, var(--card) 0%, rgba(16,185,129,0.03) 100%); }
+  .regime-color-card.green-card:hover { border-color: rgba(16,185,129,0.3); border-left-color: var(--green); }
+  .regime-color-card.yellow-card { border-left-color: var(--yellow); background: linear-gradient(145deg, var(--card) 0%, rgba(245,158,11,0.03) 100%); }
+  .regime-color-card.yellow-card:hover { border-color: rgba(245,158,11,0.3); border-left-color: var(--yellow); }
+  .regime-color-card.red-card { border-left-color: var(--red); background: linear-gradient(145deg, var(--card) 0%, rgba(239,68,68,0.03) 100%); }
+  .regime-color-card.red-card:hover { border-color: rgba(239,68,68,0.3); border-left-color: var(--red); }
   .regime-color-card.unknown-card { border-left-color: var(--unknown); }
+  .regime-color-card.unknown-card:hover { border-color: rgba(107,114,128,0.3); border-left-color: var(--unknown); }
   .regime-color-card .color-label {
-    font-size: 13px; font-weight: 600; margin-bottom: 10px;
+    font-size: 13px; font-weight: 600; margin-bottom: 12px;
     display: flex; align-items: center; gap: 8px;
+    letter-spacing: -0.2px;
   }
   .regime-color-card .color-dot {
-    width: 10px; height: 10px; border-radius: 50%; display: inline-block;
+    width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+    box-shadow: 0 0 8px currentColor;
   }
   .regime-color-card .stats-grid {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
   }
-  .mini-stat .mini-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; }
-  .mini-stat .mini-value { font-size: 14px; font-weight: 600; }
+  .mini-stat .mini-label { font-size: 9.5px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 500; }
+  .mini-stat .mini-value { font-size: 14px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
 
   /* Trade type breakdown inside regime cards */
   .tt-breakdown {
-    margin-top: 10px; padding-top: 8px;
+    margin-top: 12px; padding-top: 10px;
     border-top: 1px solid var(--border);
   }
   .tt-breakdown-label {
-    font-size: 10px; color: var(--text-dim); text-transform: uppercase;
-    letter-spacing: 0.5px; margin-bottom: 6px;
+    font-size: 9.5px; color: var(--text-muted); text-transform: uppercase;
+    letter-spacing: 0.6px; margin-bottom: 6px; font-weight: 500;
   }
   .tt-breakdown-row {
     display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px;
   }
   .tt-breakdown-row .tt-tag {
-    display: inline-block; padding: 1px 6px; border-radius: 3px;
-    font-size: 10px; font-weight: 600; min-width: 20px; text-align: center;
+    display: inline-block; padding: 2px 7px; border-radius: var(--radius-xs);
+    font-size: 10px; font-weight: 600; min-width: 22px; text-align: center;
   }
   .tt-breakdown-row .tt-count { color: var(--text-dim); font-size: 11px; min-width: 28px; }
   .tt-breakdown-row .tt-pnl { font-weight: 600; font-size: 12px; min-width: 70px; }
-  .tt-breakdown-row .tt-wr { color: var(--text-dim); font-size: 11px; }
+  .tt-breakdown-row .tt-wr { color: var(--text-muted); font-size: 11px; }
 
   /* Strategy Performance by Regime section */
   .strategy-perf-section { margin-bottom: 20px; }
-  .strategy-perf-section > h2 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
-  .strategy-perf-subtitle { font-size: 11px; color: var(--text-dim); margin-bottom: 14px; }
-  .strategy-panels { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .strategy-perf-section > h2 { font-size: 15px; font-weight: 600; margin-bottom: 4px; letter-spacing: -0.3px; }
+  .strategy-perf-subtitle { font-size: 11px; color: var(--text-muted); margin-bottom: 14px; }
+  .strategy-panels { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
   .strategy-panel {
-    background: var(--card); border-radius: 10px; padding: 16px 18px;
-    border: 1px solid var(--border); border-top: 3px solid;
+    background: linear-gradient(145deg, var(--card) 0%, var(--card-elevated) 100%);
+    border-radius: var(--radius); padding: 18px 20px;
+    border: 1px solid var(--border); border-top: 2px solid;
+    transition: all 0.3s ease;
   }
+  .strategy-panel:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
   .strategy-panel.panel-green { border-top-color: var(--green); }
+  .strategy-panel.panel-green:hover { border-color: rgba(16,185,129,0.25); border-top-color: var(--green); }
   .strategy-panel.panel-yellow { border-top-color: var(--yellow); }
+  .strategy-panel.panel-yellow:hover { border-color: rgba(245,158,11,0.25); border-top-color: var(--yellow); }
   .strategy-panel.panel-red { border-top-color: var(--red); }
+  .strategy-panel.panel-red:hover { border-color: rgba(239,68,68,0.25); border-top-color: var(--red); }
   .strategy-panel-title {
     font-size: 13px; font-weight: 600; margin-bottom: 12px;
     display: flex; align-items: center; gap: 6px;
+    letter-spacing: -0.2px;
   }
   .strategy-bar-row {
-    display: flex; align-items: center; gap: 6px; margin-bottom: 5px; font-size: 12px;
+    display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 12px;
   }
-  .strategy-bar-row.low-sample { opacity: 0.6; }
+  .strategy-bar-row.low-sample { opacity: 0.5; }
   .strategy-bar-label {
-    min-width: 65px; max-width: 65px; text-align: right; white-space: nowrap;
-    overflow: hidden; text-overflow: ellipsis; font-size: 11px; color: var(--text);
+    min-width: 68px; max-width: 68px; text-align: right; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; font-size: 11px; color: var(--text-dim);
+    font-weight: 500;
   }
   .strategy-bar-container {
-    flex: 1; height: 18px; background: rgba(255,255,255,0.03);
-    border-radius: 3px; position: relative; overflow: hidden;
+    flex: 1; height: 20px; background: rgba(255,255,255,0.02);
+    border-radius: 4px; position: relative; overflow: hidden;
   }
   .strategy-bar {
-    height: 100%; border-radius: 3px; transition: width 0.6s ease-out; min-width: 0;
+    height: 100%; border-radius: 4px; transition: width 0.6s ease-out; min-width: 0;
   }
-  .strategy-bar.bar-positive { background: var(--green); opacity: 0.7; }
-  .strategy-bar.bar-negative { background: var(--red); opacity: 0.7; float: right; }
+  .strategy-bar.bar-positive { background: linear-gradient(90deg, var(--green) 0%, var(--green-bright) 100%); opacity: 0.6; }
+  .strategy-bar.bar-negative { background: linear-gradient(90deg, var(--red-bright) 0%, var(--red) 100%); opacity: 0.6; float: right; }
   .strategy-bar-value { min-width: 80px; font-size: 11px; font-weight: 600; white-space: nowrap; }
   .strategy-bar-n { font-size: 10px; color: var(--text-dim); min-width: 36px; }
 
   /* Charts */
   .chart-section {
-    background: var(--card); border-radius: 10px; padding: 20px;
+    background: linear-gradient(145deg, var(--card) 0%, var(--card-elevated) 100%);
+    border-radius: var(--radius); padding: 20px;
     border: 1px solid var(--border); margin-bottom: 20px;
+    transition: all 0.3s ease;
   }
+  .chart-section:hover { border-color: rgba(99,102,241,0.2); }
   .chart-section h2 {
-    font-size: 15px; font-weight: 600; margin-bottom: 14px;
+    font-size: 14px; font-weight: 600; margin-bottom: 12px;
     display: flex; align-items: center; gap: 8px;
+    letter-spacing: -0.3px; color: var(--text);
+    padding-bottom: 10px; border-bottom: 1px solid var(--border-subtle);
   }
   #equity-chart { width: 100%; height: 350px; }
   #drawdown-chart { width: 100%; height: 180px; }
 
   /* Top/Bottom performers */
   .performers-grid {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
     margin-bottom: 20px;
   }
   .performers-section {
-    background: var(--card); border-radius: 10px; padding: 20px;
+    background: linear-gradient(145deg, var(--card) 0%, var(--card-elevated) 100%);
+    border-radius: var(--radius); padding: 20px;
     border: 1px solid var(--border);
+    transition: all 0.3s ease;
   }
+  .performers-section:hover { border-color: rgba(99,102,241,0.2); }
   .performers-section h3 {
     font-size: 14px; font-weight: 600; margin-bottom: 14px;
     display: flex; align-items: center; gap: 8px;
+    letter-spacing: -0.3px;
   }
   .performer-item {
-    display: flex; align-items: center; gap: 12px; padding: 10px 12px;
-    border-radius: 8px; margin-bottom: 6px; cursor: pointer;
-    transition: background 0.2s; border: 1px solid transparent;
+    display: flex; align-items: center; gap: 12px; padding: 10px 14px;
+    border-radius: var(--radius-sm); margin-bottom: 4px; cursor: pointer;
+    transition: all 0.2s ease; border: 1px solid transparent;
+    border-left: 2px solid transparent;
   }
   .performer-item:hover { background: var(--card-hover); border-color: var(--border); }
   .performer-item.selected { background: var(--blue-bg); border-color: var(--blue); }
+  .performers-section:first-child .performer-item { border-left-color: var(--green); }
+  .performers-section:last-child .performer-item { border-left-color: var(--red); }
   .performer-rank {
-    width: 26px; height: 26px; border-radius: 6px;
+    width: 26px; height: 26px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
-    font-size: 12px; font-weight: 700;
+    font-size: 11px; font-weight: 700;
   }
   .top-rank { background: var(--green-bg); color: var(--green); }
   .bottom-rank { background: var(--red-bg); color: var(--red); }
-  .performer-info { flex: 1; }
-  .performer-symbol { font-size: 14px; font-weight: 600; }
-  .performer-date { font-size: 11px; color: var(--text-dim); }
-  .performer-pnl { font-size: 14px; font-weight: 700; text-align: right; }
+  .performer-info { flex: 1; min-width: 0; overflow: hidden; }
+  .performer-symbol { font-size: 13px; font-weight: 600; letter-spacing: -0.2px; }
+  .performer-date { font-size: 10.5px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .performer-pnl { font-size: 14px; font-weight: 700; text-align: right; white-space: nowrap; letter-spacing: -0.3px; font-variant-numeric: tabular-nums; }
   .performer-mini-chart { width: 80px; height: 36px; }
 
   /* Regime filter tabs for performers */
@@ -198,19 +314,25 @@
     display: flex; gap: 4px; margin-bottom: 14px; flex-wrap: wrap;
   }
   .color-tab {
-    padding: 5px 12px; border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 14px; border: 1px solid var(--border); border-radius: 20px;
     background: transparent; color: var(--text-dim); cursor: pointer;
-    font-size: 12px; font-weight: 500; transition: all 0.2s;
+    font-size: 11.5px; font-weight: 500; transition: all 0.2s ease;
   }
-  .color-tab.active { border-color: var(--blue); color: var(--blue); background: var(--blue-bg); }
-  .color-tab:hover:not(.active) { border-color: var(--text-dim); }
+  .color-tab.active {
+    border-color: var(--blue); color: var(--blue-bright); background: var(--blue-bg);
+    box-shadow: 0 0 8px rgba(99,102,241,0.15);
+  }
+  .color-tab:hover:not(.active) { border-color: var(--text-muted); color: var(--text); background: rgba(255,255,255,0.02); }
 
   /* Trade detail chart */
   .trade-detail {
-    background: var(--card); border-radius: 10px; padding: 20px;
+    background: linear-gradient(145deg, var(--card) 0%, var(--card-elevated) 100%);
+    border-radius: var(--radius); padding: 20px;
     border: 1px solid var(--border); margin-bottom: 20px;
+    transition: all 0.3s ease;
   }
-  .trade-detail h2 { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+  .trade-detail:hover { border-color: rgba(99,102,241,0.2); }
+  .trade-detail h2 { font-size: 14px; font-weight: 600; margin-bottom: 6px; letter-spacing: -0.3px; }
   .trade-detail .trade-meta {
     font-size: 12px; color: var(--text-dim); margin-bottom: 14px;
     display: flex; gap: 16px; flex-wrap: wrap;
@@ -222,59 +344,77 @@
 
   /* Indicator toggles */
   .indicator-toggles {
-    display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; align-items: center;
+    display: flex; gap: 5px; margin-bottom: 12px; flex-wrap: wrap; align-items: center;
   }
   .indicator-toggles .toggle-label {
-    font-size: 11px; color: var(--text-dim); text-transform: uppercase;
-    letter-spacing: 0.5px; margin-right: 4px;
+    font-size: 10px; color: var(--text-muted); text-transform: uppercase;
+    letter-spacing: 0.6px; margin-right: 2px; font-weight: 500;
   }
   .indicator-toggle {
-    padding: 4px 10px; border-radius: 5px; cursor: pointer;
-    font-size: 11px; font-weight: 600; transition: all 0.2s;
+    padding: 3px 9px; border-radius: 20px; cursor: pointer;
+    font-size: 10.5px; font-weight: 600; transition: all 0.2s ease;
     border: 1px solid; user-select: none;
   }
   .indicator-toggle.active { opacity: 1; }
-  .indicator-toggle:not(.active) { opacity: 0.35; }
+  .indicator-toggle:not(.active) { opacity: 0.3; }
   .toggle-separator {
-    width: 1px; height: 20px; background: var(--border); margin: 0 4px;
+    width: 1px; height: 18px; background: var(--border); margin: 0 6px;
   }
 
   /* All trades table */
   .trades-table-section {
-    background: var(--card); border-radius: 10px; padding: 20px;
+    background: linear-gradient(145deg, var(--card) 0%, var(--card-elevated) 100%);
+    border-radius: var(--radius); padding: 20px;
     border: 1px solid var(--border); margin-bottom: 20px;
+    transition: all 0.3s ease;
   }
-  .trades-table-section h2 { font-size: 15px; font-weight: 600; margin-bottom: 14px; }
+  .trades-table-section:hover { border-color: rgba(99,102,241,0.2); }
+  .trades-table-section h2 {
+    font-size: 14px; font-weight: 600; margin-bottom: 14px; letter-spacing: -0.3px;
+    padding-bottom: 10px; border-bottom: 1px solid var(--border-subtle);
+  }
   .table-controls {
-    display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap;
+    display: flex; align-items: center; gap: 8px; margin-bottom: 14px; flex-wrap: wrap;
   }
   .search-input {
-    padding: 8px 14px; border-radius: 6px; border: 1px solid var(--border);
-    background: var(--bg); color: var(--text); font-size: 13px; width: 220px;
+    padding: 7px 12px; border-radius: var(--radius-xs); border: 1px solid var(--border);
+    background: var(--bg-subtle); color: var(--text); font-size: 12px; width: 180px;
+    transition: all 0.2s ease;
   }
-  .search-input:focus { outline: none; border-color: var(--blue); }
+  .search-input::placeholder { color: var(--text-muted); }
+  .search-input:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 2px rgba(99,102,241,0.12); }
   .sort-select {
-    padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border);
-    background: var(--bg); color: var(--text); font-size: 13px;
+    padding: 7px 10px; border-radius: var(--radius-xs); border: 1px solid var(--border);
+    background: var(--bg-subtle); color: var(--text); font-size: 12px;
+    transition: all 0.2s ease; cursor: pointer;
   }
+  .sort-select:focus { outline: none; border-color: var(--blue); }
   table {
-    width: 100%; border-collapse: collapse; font-size: 13px;
+    width: 100%; border-collapse: collapse; font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
   }
   thead th {
-    text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border);
-    color: var(--text-dim); font-weight: 500; font-size: 11px;
-    text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer;
-    user-select: none;
+    text-align: left; padding: 10px 12px;
+    border-bottom: 2px solid var(--border);
+    color: var(--text-muted); font-weight: 600; font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.8px; cursor: pointer;
+    user-select: none; transition: color 0.15s ease;
+    position: relative;
   }
   thead th:hover { color: var(--text); }
-  thead th.sorted { color: var(--blue); }
-  tbody tr { border-bottom: 1px solid rgba(42,46,61,0.5); cursor: pointer; transition: background 0.15s; }
+  thead th.sorted { color: var(--blue-bright); }
+  thead th.sorted::after {
+    content: ''; position: absolute; bottom: -2px; left: 0; right: 0; height: 2px;
+    background: var(--blue); border-radius: 1px;
+  }
+  tbody tr { border-bottom: 1px solid var(--border-subtle); cursor: pointer; transition: all 0.15s ease; }
+  tbody tr:nth-child(even) { background: rgba(255,255,255,0.008); }
   tbody tr:hover { background: var(--card-hover); }
   tbody tr.selected-row { background: var(--blue-bg); }
   tbody td { padding: 10px 12px; }
   .regime-badge {
-    display: inline-block; padding: 2px 8px; border-radius: 4px;
-    font-size: 11px; font-weight: 600;
+    display: inline-block; padding: 2px 10px; border-radius: 20px;
+    font-size: 10px; font-weight: 600; letter-spacing: 0.2px;
   }
   .badge-Green { background: var(--green-bg); color: var(--green); }
   .badge-Yellow { background: var(--yellow-bg); color: var(--yellow); }
@@ -283,11 +423,11 @@
 
   /* Strategy & trade type tag badges */
   .strategy-badge, .trade-type-badge {
-    display: inline-block; padding: 2px 8px; border-radius: 4px;
-    font-size: 11px; font-weight: 600; cursor: pointer;
-    transition: opacity 0.15s; white-space: nowrap;
+    display: inline-block; padding: 2px 8px; border-radius: 20px;
+    font-size: 10.5px; font-weight: 600; cursor: pointer;
+    transition: all 0.15s ease; white-space: nowrap;
   }
-  .strategy-badge:hover, .trade-type-badge:hover { opacity: 0.8; }
+  .strategy-badge:hover, .trade-type-badge:hover { opacity: 0.8; transform: scale(1.02); }
   .strat-Bluesky { background: rgba(56,189,248,0.12); color: #38bdf8; }
   .strat-Capitulation { background: rgba(244,63,94,0.12); color: #f43f5e; }
   .strat-Coil { background: rgba(167,139,250,0.12); color: #a78bfa; }
@@ -303,20 +443,21 @@
   .tt-TradeB { background: rgba(59,130,246,0.12); color: #3b82f6; }
   .tt-TradeE { background: rgba(16,185,129,0.12); color: #10b981; }
   .tag-empty {
-    display: inline-block; padding: 2px 8px; border-radius: 4px;
-    font-size: 11px; color: var(--text-dim); cursor: pointer;
-    border: 1px dashed var(--border);
+    display: inline-block; padding: 2px 10px; border-radius: 20px;
+    font-size: 10.5px; color: var(--text-muted); cursor: pointer;
+    border: 1px dashed var(--border); transition: all 0.15s ease;
   }
-  .tag-empty:hover { border-color: var(--text-dim); }
+  .tag-empty:hover { border-color: var(--blue); color: var(--blue-bright); }
 
   /* Tag dropdown editor */
   .tag-dropdown {
     position: absolute; z-index: 100;
-    background: var(--card); border: 1px solid var(--border);
-    border-radius: 8px; padding: 4px 0;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    background: var(--card-elevated); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 4px 0;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.5);
     max-height: 240px; overflow-y: auto;
     min-width: 140px;
+    backdrop-filter: blur(12px);
   }
   .tag-dropdown-item {
     padding: 6px 14px; cursor: pointer; font-size: 12px;
@@ -330,11 +471,16 @@
     display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 14px;
   }
   .page-btn {
-    padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius-xs);
     background: transparent; color: var(--text-dim); cursor: pointer; font-size: 12px;
+    transition: all 0.15s ease;
   }
-  .page-btn.active { background: var(--blue); color: #fff; border-color: var(--blue); }
-  .page-btn:hover:not(.active) { border-color: var(--text-dim); }
+  .page-btn.active {
+    background: linear-gradient(135deg, var(--blue) 0%, #4f46e5 100%);
+    color: #fff; border-color: var(--blue);
+    box-shadow: 0 2px 6px rgba(99,102,241,0.25);
+  }
+  .page-btn:hover:not(.active) { border-color: var(--text-muted); color: var(--text); }
   .page-info { font-size: 12px; color: var(--text-dim); margin: 0 8px; }
 
   @media (max-width: 1200px) {
@@ -354,11 +500,11 @@
 <body>
 
 <div class="header">
-  <h1><span>Regime</span> Performance Dashboard</h1>
+  <h1><div class="header-dot"></div><span>Regime</span> Performance Dashboard</h1>
   <div class="regime-selector">
-    <button class="regime-btn active" data-regime="1">Regime 1 — Simple</button>
-    <button class="regime-btn" data-regime="2">Regime 2 — MMTH</button>
-    <button class="regime-btn" data-regime="3">Regime 3 — CNHNL</button>
+    <button class="regime-btn active" data-regime="1">Simple (EMA)</button>
+    <button class="regime-btn" data-regime="2">MMTH</button>
+    <button class="regime-btn" data-regime="3">CNHNL</button>
   </div>
 </div>
 
@@ -398,18 +544,18 @@
 
   <!-- Color filter for top/bottom -->
   <div style="margin-bottom: 14px;">
-    <h2 style="font-size:15px; font-weight:600; margin-bottom:10px;">Top & Bottom Performers by Regime Color</h2>
+    <div class="section-title">Top & Bottom Performers</div>
     <div class="color-filter-tabs" id="color-filter"></div>
   </div>
 
   <!-- Top/Bottom performers -->
   <div class="performers-grid">
     <div class="performers-section">
-      <h3 style="color:var(--green);">Top 5 Performers</h3>
+      <h3><span style="color:var(--green);">Top 5</span> <span style="color:var(--text-dim); font-weight:400;">Performers</span></h3>
       <div id="top-performers"></div>
     </div>
     <div class="performers-section">
-      <h3 style="color:var(--red);">Bottom 5 Performers</h3>
+      <h3><span style="color:var(--red);">Bottom 5</span> <span style="color:var(--text-dim); font-weight:400;">Performers</span></h3>
       <div id="bottom-performers"></div>
     </div>
   </div>
@@ -548,11 +694,11 @@ const OVERLAY_CONFIG = {
 };
 
 const CHART_OPTS = {
-  layout: { background: { color: '#1a1d29' }, textColor: '#8b8fa3' },
-  grid: { vertLines: { color: '#2a2e3d' }, horzLines: { color: '#2a2e3d' } },
+  layout: { background: { color: '#13161f' }, textColor: '#6b7189' },
+  grid: { vertLines: { color: '#1a1e2a' }, horzLines: { color: '#1a1e2a' } },
   crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-  rightPriceScale: { borderColor: '#2a2e3d' },
-  timeScale: { borderColor: '#2a2e3d', timeVisible: false },
+  rightPriceScale: { borderColor: '#1e2231' },
+  timeScale: { borderColor: '#1e2231', timeVisible: false },
   handleScroll: { vertTouchDrag: false },
 };
 
@@ -726,10 +872,15 @@ function setupColorFilter() {
   const container = document.getElementById('color-filter');
   const colors = ['all', 'Green', 'Yellow', 'Red', 'Unknown'];
   const labels = ['All', 'Green', 'Yellow', 'Red', 'Unknown'];
+  const dotColors = { Green: '#10b981', Yellow: '#f59e0b', Red: '#ef4444', Unknown: '#6b7280' };
   colors.forEach((c, i) => {
     const btn = document.createElement('button');
     btn.className = 'color-tab' + (c === 'all' ? ' active' : '');
-    btn.textContent = labels[i];
+    if (c !== 'all') {
+      btn.innerHTML = `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${dotColors[c]};margin-right:4px;vertical-align:middle;"></span>${labels[i]}`;
+    } else {
+      btn.textContent = labels[i];
+    }
     btn.addEventListener('click', () => {
       container.querySelectorAll('.color-tab').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
@@ -976,9 +1127,9 @@ function renderRegimeColorCards() {
     const totalPnL = s['Total P&L'] || 0;
     const nTrades = s['# Trades'] || 0;
     const winRate = s['Win Rate'] || 0;
-    const avgPnL = s['Avg P&L per Trade'] || 0;
+    const avgPnL = s['Avg P&L'] || 0;
     const edgeRatio = s['Edge Ratio'] || 0;
-    const avgHold = s['Avg Holding Days'] || 0;
+    const avgHold = s['Avg Holding Period'] || 0;
     // Compute trade type breakdown from live trades
     const colorTrades = trades.filter(t => t.regimeColor === c.key);
     const ttStats = computeTradeTypeStats(colorTrades);
@@ -1006,7 +1157,7 @@ function renderRegimeColorCards() {
           <div class="mini-stat"><div class="mini-label">Avg P&L</div><div class="mini-value ${avgPnL >= 0 ? 'positive' : 'negative'}">${fmtPnL(avgPnL)}</div></div>
           <div class="mini-stat"><div class="mini-label">Edge Ratio</div><div class="mini-value">${edgeRatio ? edgeRatio.toFixed(2) : '—'}</div></div>
           <div class="mini-stat"><div class="mini-label">Avg Hold</div><div class="mini-value">${avgHold ? avgHold.toFixed(1) + 'd' : '—'}</div></div>
-          <div class="mini-stat"><div class="mini-label">Best</div><div class="mini-value positive">${fmtPnL(s['Best Trade'] || 0)}</div></div>
+          <div class="mini-stat"><div class="mini-label">Best</div><div class="mini-value positive">${fmtPnL(s['Max Win'] || 0)}</div></div>
         </div>
         ${ttHtml ? `<div class="tt-breakdown"><div class="tt-breakdown-label">By Trade Type</div>${ttHtml}</div>` : ''}
       </div>`;
