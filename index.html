@@ -145,8 +145,8 @@
   .stat-card:hover { border-color: rgba(99,102,241,0.3); transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
   .stat-card:hover::before { opacity: 1; }
   .stat-card:nth-child(1)::before { background: linear-gradient(90deg, var(--blue) 0%, var(--blue-bright) 100%); opacity: 1; }
-  .stat-card:nth-child(4)::before { background: linear-gradient(90deg, var(--green) 0%, var(--green-bright) 100%); opacity: 0.7; }
-  .stat-card:nth-child(5)::before { background: linear-gradient(90deg, var(--red) 0%, var(--red-bright) 100%); opacity: 0.7; }
+  .stat-card:nth-child(4)::before { background: linear-gradient(90deg, var(--blue) 0%, var(--blue-bright) 100%); opacity: 0.5; }
+  .stat-card:nth-child(5)::before { background: linear-gradient(90deg, var(--yellow) 0%, var(--yellow-bright) 100%); opacity: 0.5; }
   .stat-card .label { font-size: 10.5px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; font-weight: 500; }
   .stat-card .value { font-size: 24px; font-weight: 700; letter-spacing: -0.5px; line-height: 1.1; font-variant-numeric: tabular-nums; }
   .stat-card .sub { font-size: 11.5px; color: var(--text-muted); margin-top: 6px; }
@@ -762,19 +762,19 @@
     <div class="trade-meta" id="trade-detail-meta"></div>
     <div class="indicator-toggles" id="indicator-toggles">
       <span class="toggle-label">Regimes:</span>
-      <div class="indicator-toggle active" data-trade-regime="Green" style="color:#22c55e; border-color:#22c55e; background:rgba(34,197,94,0.1);">Green</div>
-      <div class="indicator-toggle active" data-trade-regime="Yellow" style="color:#eab308; border-color:#eab308; background:rgba(234,179,8,0.1);">Yellow</div>
-      <div class="indicator-toggle active" data-trade-regime="Red" style="color:#ef4444; border-color:#ef4444; background:rgba(239,68,68,0.1);">Red</div>
+      <div class="indicator-toggle" data-trade-regime="Green" style="color:#22c55e; border-color:#22c55e; background:rgba(34,197,94,0.1);">Green</div>
+      <div class="indicator-toggle" data-trade-regime="Yellow" style="color:#eab308; border-color:#eab308; background:rgba(234,179,8,0.1);">Yellow</div>
+      <div class="indicator-toggle" data-trade-regime="Red" style="color:#ef4444; border-color:#ef4444; background:rgba(239,68,68,0.1);">Red</div>
       <div class="toggle-separator"></div>
       <span class="toggle-label">EMAs:</span>
-      <div class="indicator-toggle active" data-indicator="ema10" style="color:#f59e0b; border-color:#f59e0b; background:rgba(245,158,11,0.1);">10</div>
-      <div class="indicator-toggle active" data-indicator="ema20" style="color:#3b82f6; border-color:#3b82f6; background:rgba(59,130,246,0.1);">20</div>
-      <div class="indicator-toggle active" data-indicator="ema25" style="color:#8b5cf6; border-color:#8b5cf6; background:rgba(139,92,246,0.1);">25</div>
-      <div class="indicator-toggle active" data-indicator="ema50" style="color:#ec4899; border-color:#ec4899; background:rgba(236,72,153,0.1);">50</div>
-      <div class="indicator-toggle active" data-indicator="ema200" style="color:#ef4444; border-color:#ef4444; background:rgba(239,68,68,0.1);">200</div>
+      <div class="indicator-toggle" data-indicator="ema10" style="color:#f59e0b; border-color:#f59e0b; background:rgba(245,158,11,0.1);">10</div>
+      <div class="indicator-toggle" data-indicator="ema20" style="color:#3b82f6; border-color:#3b82f6; background:rgba(59,130,246,0.1);">20</div>
+      <div class="indicator-toggle" data-indicator="ema25" style="color:#8b5cf6; border-color:#8b5cf6; background:rgba(139,92,246,0.1);">25</div>
+      <div class="indicator-toggle" data-indicator="ema50" style="color:#ec4899; border-color:#ec4899; background:rgba(236,72,153,0.1);">50</div>
+      <div class="indicator-toggle" data-indicator="ema200" style="color:#ef4444; border-color:#ef4444; background:rgba(239,68,68,0.1);">200</div>
       <div class="toggle-separator"></div>
       <span class="toggle-label">MACD:</span>
-      <div class="indicator-toggle active" data-indicator="macd" style="color:#06b6d4; border-color:#06b6d4; background:rgba(6,182,212,0.1);">12,26,9</div>
+      <div class="indicator-toggle" data-indicator="macd" style="color:#06b6d4; border-color:#06b6d4; background:rgba(6,182,212,0.1);">12,26,9</div>
     </div>
     <div id="trade-chart"></div>
     <div id="macd-chart"></div>
@@ -853,10 +853,10 @@ let overlaySeries = {};
 let drawdownChart, drawdownSeries;
 let tradeChart, tradeSeries, macdChart;
 let tradeRegimeBandSeries = {};
-let tradeRegimeState = { Green: true, Yellow: true, Red: true };
+let tradeRegimeState = { Green: false, Yellow: false, Red: false };
 let tradeEmaSeries = {};
 let macdLineSeries, macdSignalSeries, macdHistSeries;
-let indicatorState = { ema10: true, ema20: true, ema25: true, ema50: true, ema200: true, macd: true };
+let indicatorState = { ema10: false, ema20: false, ema25: false, ema50: false, ema200: false, macd: false };
 let pnlDisplayMode = 'avg'; // 'avg' or 'total'
 let sortField = 'pnl', sortDir = -1;
 let searchTerm = '';
@@ -1334,6 +1334,7 @@ function applyIndicatorVisibility() {
   const macdContainer = document.getElementById('macd-chart');
   if (indicatorState.macd) {
     macdContainer.style.display = 'block';
+    if (macdChart) macdChart.applyOptions({ width: macdContainer.clientWidth });
     if (macdLineSeries) macdLineSeries.applyOptions({ visible: true });
     if (macdSignalSeries) macdSignalSeries.applyOptions({ visible: true });
     if (macdHistSeries) macdHistSeries.applyOptions({ visible: true });
@@ -1695,21 +1696,24 @@ function renderSummary() {
       </div>`;
     return;
   }
-  const winners = trades.filter(t => t.pnl > 0).length;
+  const winners = trades.filter(t => t.pnl > 0);
+  const losers = trades.filter(t => t.pnl <= 0);
   const totalPnL = trades.reduce((s, t) => s + t.pnl, 0);
   const avgPnL = n ? totalPnL / n : 0;
   const sortedPnls = trades.map(t => t.pnl).sort((a, b) => a - b);
   const medianPnL = n ? sortedPnls[Math.floor(n / 2)] : 0;
-  const bestTrade = n ? Math.max(...sortedPnls) : 0;
-  const worstTrade = n ? Math.min(...sortedPnls) : 0;
-  const wr = n ? winners / n : 0;
+  const wr = n ? winners.length / n : 0;
+  const avgWin = winners.length ? winners.reduce((s, t) => s + t.pnl, 0) / winners.length : 0;
+  const avgLoss = losers.length ? Math.abs(losers.reduce((s, t) => s + t.pnl, 0) / losers.length) : 0;
+  const edgeRatio = avgLoss > 0 ? avgWin / avgLoss : 0;
+  const totalFees = trades.reduce((s, t) => s + Math.abs(t.fees || 0), 0);
 
   const html = [
     { label: 'Total P&L', value: fmtPnL(totalPnL), cls: totalPnL >= 0 ? 'positive' : 'negative', sub: `${n} trades` },
     { label: 'Avg P&L / Trade', value: fmtPnL(avgPnL), cls: avgPnL >= 0 ? 'positive' : 'negative', sub: `Median: ${fmtPnL(medianPnL)}` },
-    { label: 'Win Rate', value: (wr * 100).toFixed(1) + '%', cls: wr >= 0.5 ? 'positive' : 'negative', sub: `${winners}W / ${n - winners}L` },
-    { label: 'Best Trade', value: fmtPnL(bestTrade), cls: 'positive', sub: trades.find(t => t.pnl === bestTrade)?.symbol || '' },
-    { label: 'Worst Trade', value: fmtPnL(worstTrade), cls: 'negative', sub: trades.find(t => t.pnl === worstTrade)?.symbol || '' },
+    { label: 'Win Rate', value: (wr * 100).toFixed(1) + '%', cls: wr >= 0.5 ? 'positive' : 'negative', sub: `${winners.length}W / ${losers.length}L` },
+    { label: 'Edge Ratio', value: edgeRatio.toFixed(2), cls: edgeRatio >= 1.5 ? 'positive' : (edgeRatio >= 1 ? '' : 'negative'), sub: `Avg W: ${fmtPnL(Math.round(avgWin))} / Avg L: ${fmtPnL(Math.round(-avgLoss))}` },
+    { label: 'Commissions', value: '$' + fmt(totalFees, 2), cls: 'negative', sub: `$${(totalFees / n).toFixed(2)} / trade` },
   ].map(c => `
     <div class="stat-card">
       <div class="label">${c.label}</div>
@@ -2232,7 +2236,8 @@ function renderTradeChart(trade) {
   tradeChart.timeScale().fitContent();
 
   // --- MACD chart ---
-  macdContainer.style.display = indicatorState.macd ? 'block' : 'none';
+  // Always create visible so chart gets proper dimensions, then hide if needed
+  macdContainer.style.display = 'block';
   macdChart = LightweightCharts.createChart(macdContainer, {
     ...CHART_OPTS,
     rightPriceScale: { borderColor: '#2a2e3d', scaleMargins: { top: 0.1, bottom: 0.1 } },
@@ -2288,6 +2293,9 @@ function renderTradeChart(trade) {
   });
 
   macdChart.timeScale().fitContent();
+
+  // Hide MACD if toggled off (created visible for proper sizing)
+  if (!indicatorState.macd) macdContainer.style.display = 'none';
 
   // Sync crosshairs between trade chart and MACD chart
   tradeChart.subscribeCrosshairMove(param => {
