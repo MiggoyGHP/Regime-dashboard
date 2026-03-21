@@ -78,15 +78,15 @@ assert(!pyContent.includes("'Best Trade'"), "Python script does NOT use old name
 assert(!pyContent.includes("'Avg Holding Days'"), "Python script does NOT use old name 'Avg Holding Days'");
 
 // Verify the JS dashboard reads the correct field names
-const htmlPath = path.join(__dirname, 'index.html');
-const htmlContent = fs.readFileSync(htmlPath, 'utf-8');
+const jsPath = path.join(__dirname, 'app.js');
+const jsContent = fs.readFileSync(jsPath, 'utf-8');
 
-assert(htmlContent.includes("s['Avg P&L']"), "JS reads s['Avg P&L']");
-assert(htmlContent.includes("s['Max Win']"), "JS reads s['Max Win']");
-assert(htmlContent.includes("s['Avg Holding Period']"), "JS reads s['Avg Holding Period']");
-assert(!htmlContent.includes("s['Avg P&L per Trade']"), "JS does NOT read old s['Avg P&L per Trade']");
-assert(!htmlContent.includes("s['Best Trade']"), "JS does NOT read old s['Best Trade']");
-assert(!htmlContent.includes("s['Avg Holding Days']"), "JS does NOT read old s['Avg Holding Days']");
+assert(jsContent.includes("s['Avg P&L']"), "JS reads s['Avg P&L']");
+assert(jsContent.includes("s['Max Win']"), "JS reads s['Max Win']");
+assert(jsContent.includes("s['Avg Holding Period']"), "JS reads s['Avg Holding Period']");
+assert(!jsContent.includes("s['Avg P&L per Trade']"), "JS does NOT read old s['Avg P&L per Trade']");
+assert(!jsContent.includes("s['Best Trade']"), "JS does NOT read old s['Best Trade']");
+assert(!jsContent.includes("s['Avg Holding Days']"), "JS does NOT read old s['Avg Holding Days']");
 
 console.log(`\n${failures === 0 ? 'ALL TESTS PASSED' : `${failures} TEST(S) FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);
