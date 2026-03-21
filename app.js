@@ -10,6 +10,7 @@ let currentRegime = 1;
 let currentView = 'overview';
 let currentColorFilter = 'all';
 let selectedTradeIdx = null;
+let navList = null; // Array of tradeId values for arrow key navigation
 let equityChart, equityLineSeries, equityBandSeries = {};
 let drawdownBandSeries = {};
 let equityColorState = { Green: true, Yellow: true, Red: true };
@@ -700,7 +701,23 @@ function setupKeyboardShortcuts() {
     else if (e.key === '2' && !e.ctrlKey && !e.metaKey) { e.preventDefault(); switchView('analysis'); }
     else if (e.key === '3' && !e.ctrlKey && !e.metaKey) { e.preventDefault(); switchView('trades'); }
     else if (e.key === 'Escape') closeTradeDetail();
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      const overlay = document.getElementById('trade-detail-overlay');
+      if (!overlay.classList.contains('open')) return;
+      e.preventDefault();
+      navigateTrade(e.key === 'ArrowLeft' ? -1 : 1);
+    }
   });
+}
+
+function navigateTrade(direction) {
+  if (!navList || navList.length <= 1) return;
+  const idx = navList.indexOf(selectedTradeIdx);
+  if (idx === -1) return;
+  let next = idx + direction;
+  if (next < 0) next = navList.length - 1;
+  if (next >= navList.length) next = 0;
+  showTradeDetail(navList[next]);
 }
 
 // --- Trade Detail Panel ---
@@ -709,12 +726,15 @@ function setupTradeDetailPanel() {
   document.getElementById('trade-detail-overlay').addEventListener('click', function(e) {
     if (e.target === this) closeTradeDetail();
   });
+  document.getElementById('panel-prev').addEventListener('click', () => navigateTrade(-1));
+  document.getElementById('panel-next').addEventListener('click', () => navigateTrade(1));
 }
 
 function closeTradeDetail() {
   document.getElementById('trade-detail-overlay').classList.remove('open');
   document.body.style.overflow = '';
   selectedTradeIdx = null;
+  navList = null;
 }
 
 // --- Rendering ---
@@ -1261,8 +1281,11 @@ function renderPerformers() {
     return;
   }
   const sorted = [...filtered].sort((a, b) => b.pnl - a.pnl);
-  renderPerformerList('top-performers', sorted.slice(0, 5), 'top');
-  renderPerformerList('bottom-performers', sorted.slice(-5).reverse(), 'bottom');
+  const top5 = sorted.slice(0, 5);
+  const bottom5 = sorted.slice(-5).reverse();
+  window._performerNavIds = top5.concat(bottom5).map(t => t.tradeId);
+  renderPerformerList('top-performers', top5, 'top');
+  renderPerformerList('bottom-performers', bottom5, 'bottom');
 }
 
 function renderPerformerList(containerId, items, type) {
@@ -1273,7 +1296,7 @@ function renderPerformerList(containerId, items, type) {
     const isTop = type === 'top';
     const strategyTag = t.strategy ? `<span style="color:var(--text-dim);font-size:11px;"> (${t.strategy})</span>` : '';
     return `
-      <div class="performer-item" onclick="showTradeDetail(${t.tradeId})">
+      <div class="performer-item" onclick="showTradeDetail(${t.tradeId}, window._performerNavIds)">
         <div class="performer-rank ${isTop ? 'top-rank' : 'bottom-rank'}">${i + 1}</div>
         <div class="performer-info">
           <div class="performer-symbol">${t.symbol}${strategyTag}</div>
@@ -1293,13 +1316,19 @@ function calcHoldingDays(entry, exit) {
   return Math.round((d2 - d1) / 86400000);
 }
 
-function showTradeDetail(tradeId) {
+function showTradeDetail(tradeId, sourceNavList) {
   const overlay = document.getElementById('trade-detail-overlay');
   const isAlreadyOpen = overlay.classList.contains('open');
 
   if (!isAlreadyOpen) {
     overlay.classList.add('open');
     document.body.style.overflow = 'hidden';
+    // Set navigation list on first open
+    if (sourceNavList) {
+      navList = sourceNavList;
+    } else {
+      navList = getTableFilteredSorted().map(t => t.tradeId);
+    }
   }
 
   const trades = getTrades();
@@ -1307,6 +1336,16 @@ function showTradeDetail(tradeId) {
   if (!trade) return;
 
   selectedTradeIdx = tradeId;
+
+  // Update navigation position indicator
+  const navEl = document.getElementById('panel-nav');
+  if (navList && navList.length > 1) {
+    const pos = navList.indexOf(tradeId);
+    document.getElementById('panel-nav-pos').textContent = `${pos + 1} / ${navList.length}`;
+    navEl.style.display = 'flex';
+  } else {
+    navEl.style.display = 'none';
+  }
 
   const holdDays = calcHoldingDays(trade.entryDate, trade.exitDate);
   document.getElementById('trade-detail-title').textContent = `${trade.symbol} \u2014 Trade Detail`;
@@ -1542,9 +1581,8 @@ function renderTradeChart(trade) {
 }
 
 // --- Trade Table ---
-function renderTable() {
-  const trades = getTrades();
-  let filtered = [...trades];
+function getTableFilteredSorted() {
+  let filtered = [...getTrades()];
   if (searchTerm) filtered = filtered.filter(t =>
     t.symbol.toLowerCase().includes(searchTerm) ||
     (t.strategy && t.strategy.toLowerCase().includes(searchTerm)) ||
@@ -1558,12 +1596,16 @@ function renderTable() {
   filtered = filtered.filter(t => selectedTradeTypes.has(t.tradeType || '(Untagged)'));
   if (dateFrom) filtered = filtered.filter(t => t.entryDate >= dateFrom);
   if (dateTo) filtered = filtered.filter(t => t.entryDate <= dateTo);
-
   filtered.sort((a, b) => {
     let va = a[sortField], vb = b[sortField];
     if (typeof va === 'string') return va.localeCompare(vb) * sortDir;
     return (va - vb) * sortDir;
   });
+  return filtered;
+}
+
+function renderTable() {
+  const filtered = getTableFilteredSorted();
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
   const start = (currentPage - 1) * PAGE_SIZE;
