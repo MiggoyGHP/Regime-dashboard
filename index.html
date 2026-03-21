@@ -81,7 +81,8 @@
     to { opacity: 1; transform: translateY(0); }
   }
   .stat-card, .regime-color-card, .strategy-panel, .chart-section,
-  .performers-section, .trades-table-section, .trade-detail {
+  .performers-section, .trades-table-section, .trade-detail,
+  .heatmap-section {
     animation: fadeInUp 0.4s ease-out backwards;
   }
   .stat-card:nth-child(1) { animation-delay: 0.02s; }
@@ -553,6 +554,42 @@
     .summary-row { grid-template-columns: 1fr 1fr; }
     .regime-stats-row { grid-template-columns: 1fr; }
   }
+
+  /* Heatmap */
+  .heatmap-section {
+    background: linear-gradient(145deg, var(--card) 0%, var(--card-elevated) 100%);
+    border-radius: var(--radius); padding: 20px;
+    border: 1px solid var(--border); margin-bottom: 20px;
+    transition: all 0.3s ease;
+    animation: fadeInUp 0.4s ease-out backwards; animation-delay: 0.22s;
+  }
+  .heatmap-section:hover { border-color: rgba(99,102,241,0.2); }
+  .heatmap-section h2 { font-size: 15px; font-weight: 600; margin-bottom: 4px; letter-spacing: -0.3px; }
+  .heatmap-subtitle { font-size: 11px; color: var(--text-muted); margin-bottom: 14px; }
+  .heatmap-table { width: 100%; border-collapse: separate; border-spacing: 4px; }
+  .heatmap-table th {
+    font-size: 11px; font-weight: 600; color: var(--text-dim); text-align: center;
+    padding: 8px 6px; letter-spacing: 0.3px; text-transform: uppercase;
+  }
+  .heatmap-table th.heatmap-strat-header { text-align: left; min-width: 100px; }
+  .heatmap-cell {
+    padding: 10px 8px; border-radius: var(--radius-xs); text-align: center;
+    transition: all 0.2s ease; position: relative;
+    border: 1px solid transparent;
+  }
+  .heatmap-avg { font-size: 14px; font-weight: 700; line-height: 1.2; }
+  .heatmap-meta { font-size: 10px; color: rgba(255,255,255,0.6); margin-top: 2px; }
+  .heatmap-cell.low-sample { opacity: 0.45; }
+  .heatmap-cell.no-data { background: rgba(255,255,255,0.015); }
+  .heatmap-cell.no-data .heatmap-avg { color: var(--text-muted); font-size: 11px; }
+  .heatmap-strat-label { font-size: 12px; font-weight: 500; color: var(--text-dim); padding: 10px 8px; }
+  .heatmap-total-cell {
+    padding: 10px 8px; text-align: center; border-radius: var(--radius-xs);
+    background: rgba(255,255,255,0.02);
+  }
+  .heatmap-total-cell .heatmap-avg { font-size: 13px; }
+  .heatmap-total-cell .heatmap-meta { font-size: 10px; }
+
 </style>
 </head>
 <body>
@@ -576,6 +613,9 @@
 
   <!-- Strategy Performance by Regime -->
   <div class="strategy-perf-section" id="strategy-perf-section"></div>
+
+  <!-- Strategy x Regime Heatmap -->
+  <div class="heatmap-section" id="heatmap-section"></div>
 
   <!-- Equity Curve Chart -->
   <div class="chart-section">
@@ -720,6 +760,7 @@ let tradeRegimeState = { Green: true, Yellow: true, Red: true };
 let tradeEmaSeries = {};
 let macdLineSeries, macdSignalSeries, macdHistSeries;
 let indicatorState = { ema10: true, ema20: true, ema25: true, ema50: true, ema200: true, macd: true };
+let pnlDisplayMode = 'avg'; // 'avg' or 'total'
 let sortField = 'pnl', sortDir = -1;
 let searchTerm = '';
 let selectedColors = null;
@@ -812,15 +853,159 @@ function computeStrategyExpectancy(trades, regimeColor) {
     const pnls = stratMap[s];
     const n = pnls.length;
     const totalPnL = pnls.reduce((a, b) => a + b, 0);
-    return { strategy: s, count: n, expectancy: n > 0 ? totalPnL / n : 0, lowSample: n > 0 && n < 30 };
+    return { strategy: s, count: n, expectancy: n > 0 ? totalPnL / n : 0, totalPnL, lowSample: n > 0 && n < 30 };
   });
+  const valFn = pnlDisplayMode === 'total' ? d => d.totalPnL : d => d.expectancy;
   results.sort((a, b) => {
     if (a.count === 0 && b.count !== 0) return -1;
     if (a.count !== 0 && b.count === 0) return 1;
     if (a.count === 0 && b.count === 0) return a.strategy.localeCompare(b.strategy);
-    return b.expectancy - a.expectancy;
+    return valFn(b) - valFn(a);
   });
   return results;
+}
+
+// --- Heatmap Computation ---
+let heatmapSortCol = 'Total'; // 'Green', 'Yellow', 'Red', or 'Total'
+let heatmapSortDir = -1; // -1 = descending, 1 = ascending
+
+function computeHeatmapData(trades) {
+  const colors = ['Green', 'Yellow', 'Red'];
+  const matrix = {};
+  STRATEGY_VALUES.forEach(s => {
+    matrix[s] = {};
+    colors.forEach(c => {
+      const subset = trades.filter(t => t.primaryStrategy === s && t.regimeColor === c);
+      const n = subset.length;
+      if (n === 0) { matrix[s][c] = { count: 0, totalPnL: 0, avgPnL: 0, winRate: 0, edgeRatio: 0 }; return; }
+      const totalPnL = subset.reduce((sum, t) => sum + t.pnl, 0);
+      const wins = subset.filter(t => t.pnl > 0);
+      const losses = subset.filter(t => t.pnl <= 0);
+      const avgWin = wins.length ? wins.reduce((sum, t) => sum + t.pnl, 0) / wins.length : 0;
+      const avgLoss = losses.length ? Math.abs(losses.reduce((sum, t) => sum + t.pnl, 0) / losses.length) : 0;
+      matrix[s][c] = {
+        count: n, totalPnL, avgPnL: totalPnL / n,
+        winRate: wins.length / n, edgeRatio: avgLoss > 0 ? avgWin / avgLoss : 0
+      };
+    });
+    // Total row
+    const all = trades.filter(t => t.primaryStrategy === s);
+    const n = all.length;
+    const totalPnL = all.reduce((sum, t) => sum + t.pnl, 0);
+    const wins = all.filter(t => t.pnl > 0);
+    const losses = all.filter(t => t.pnl <= 0);
+    const avgWin = wins.length ? wins.reduce((sum, t) => sum + t.pnl, 0) / wins.length : 0;
+    const avgLoss = losses.length ? Math.abs(losses.reduce((sum, t) => sum + t.pnl, 0) / losses.length) : 0;
+    matrix[s].Total = {
+      count: n, totalPnL, avgPnL: n > 0 ? totalPnL / n : 0,
+      winRate: n > 0 ? wins.length / n : 0, edgeRatio: avgLoss > 0 ? avgWin / avgLoss : 0
+    };
+  });
+  return matrix;
+}
+
+function heatmapCellColor(val, count, mode) {
+  if (count === 0) return 'transparent';
+  const hi = mode === 'total' ? 10000 : 500;
+  const lo = mode === 'total' ? 2000 : 100;
+  if (val > hi) return 'rgba(16,185,129,0.35)';
+  if (val > lo) return 'rgba(16,185,129,0.18)';
+  if (val > 0) return 'rgba(16,185,129,0.08)';
+  if (val > -lo) return 'rgba(239,68,68,0.08)';
+  if (val > -hi) return 'rgba(239,68,68,0.18)';
+  return 'rgba(239,68,68,0.35)';
+}
+
+function renderStrategyRegimeHeatmap() {
+  const trades = getFilteredTrades();
+  const matrix = computeHeatmapData(trades);
+  const colors = ['Green', 'Yellow', 'Red'];
+  const colorDots = { Green: 'var(--green)', Yellow: 'var(--yellow)', Red: 'var(--red)' };
+
+  const isTotal = pnlDisplayMode === 'total';
+  const valKey = isTotal ? 'totalPnL' : 'avgPnL';
+
+  // Sort strategies by selected column and direction
+  const sorted = [...STRATEGY_VALUES].sort((a, b) => {
+    const aVal = matrix[a][heatmapSortCol][valKey];
+    const bVal = matrix[b][heatmapSortCol][valKey];
+    return (bVal - aVal) * heatmapSortDir;
+  });
+
+  const sortArrow = col => heatmapSortCol === col ? (heatmapSortDir === -1 ? ' \u25BC' : ' \u25B2') : '';
+  const headerCells = colors.map(c =>
+    `<th class="heatmap-sort-header" data-sort-col="${c}" style="cursor:pointer;user-select:none;"><span class="color-dot" style="background:${colorDots[c]};display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle;"></span>${c}${sortArrow(c)}</th>`
+  ).join('') + `<th class="heatmap-sort-header" data-sort-col="Total" style="cursor:pointer;user-select:none;">Total${sortArrow('Total')}</th>`;
+
+  const rows = sorted.map(s => {
+    const cells = colors.map(c => {
+      const d = matrix[s][c];
+      if (d.count === 0) {
+        return `<td class="heatmap-cell no-data">
+          <div class="heatmap-avg">—</div></td>`;
+      }
+      const lowSample = d.count < 5 ? ' low-sample' : '';
+      const displayVal = d[valKey];
+      const bg = heatmapCellColor(displayVal, d.count, pnlDisplayMode);
+      const valClass = displayVal >= 0 ? 'positive' : 'negative';
+      return `<td class="heatmap-cell${lowSample}" style="background:${bg}">
+        <div class="heatmap-avg ${valClass}">${fmtPnL(Math.round(displayVal))}</div>
+        <div class="heatmap-meta">n=${d.count} · ${Math.round(d.winRate * 100)}% WR</div>
+      </td>`;
+    }).join('');
+
+    const t = matrix[s].Total;
+    const totalDisplayVal = t[valKey];
+    const totalValClass = totalDisplayVal >= 0 ? 'positive' : 'negative';
+    const totalBg = heatmapCellColor(totalDisplayVal, t.count, pnlDisplayMode);
+    const totalMeta = isTotal ? `n=${t.count} · ${Math.round(t.winRate * 100)}% WR` : `n=${t.count} · $${fmt(Math.abs(t.totalPnL), 0)}`;
+    const totalCell = t.count === 0
+      ? `<td class="heatmap-total-cell"><div class="heatmap-avg" style="color:var(--text-muted)">—</div></td>`
+      : `<td class="heatmap-total-cell" style="background:${totalBg}">
+          <div class="heatmap-avg ${totalValClass}">${fmtPnL(Math.round(totalDisplayVal))}</div>
+          <div class="heatmap-meta">${totalMeta}</div>
+        </td>`;
+
+    return `<tr><td class="heatmap-strat-label">${strategyLabel(s)}</td>${cells}${totalCell}</tr>`;
+  }).join('');
+
+  const avgActive = pnlDisplayMode === 'avg' ? ' active' : '';
+  const totalActive = pnlDisplayMode === 'total' ? ' active' : '';
+  const modeLabel = isTotal ? 'Total P&L' : 'Avg P&L';
+
+  document.getElementById('heatmap-section').innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">
+      <h2>Strategy × Regime Performance Matrix</h2>
+      <div class="indicator-toggles" style="margin-bottom:0;">
+        <div class="indicator-toggle pnl-mode-toggle${avgActive}" data-pnl-mode="avg" style="color:#818cf8;border-color:#818cf8;background:rgba(99,102,241,0.1);">Avg P&L</div>
+        <div class="indicator-toggle pnl-mode-toggle${totalActive}" data-pnl-mode="total" style="color:#818cf8;border-color:#818cf8;background:rgba(99,102,241,0.1);">Total P&L</div>
+      </div>
+    </div>
+    <div class="heatmap-subtitle">Showing ${modeLabel} · Click column headers to sort · Dimmed cells have &lt; 5 trades</div>
+    <table class="heatmap-table">
+      <thead><tr><th class="heatmap-strat-header">Strategy</th>${headerCells}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+
+  // Column sort handler
+  document.querySelectorAll('.heatmap-sort-header').forEach(th => {
+    th.addEventListener('click', () => {
+      const col = th.dataset.sortCol;
+      if (heatmapSortCol === col) heatmapSortDir *= -1;
+      else { heatmapSortCol = col; heatmapSortDir = -1; }
+      renderStrategyRegimeHeatmap();
+    });
+  });
+
+  // P&L mode toggle handler
+  document.querySelectorAll('.pnl-mode-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      pnlDisplayMode = btn.dataset.pnlMode;
+      renderStrategyPerformance();
+      renderStrategyRegimeHeatmap();
+    });
+  });
 }
 
 // --- Tag Override System (localStorage) ---
@@ -896,6 +1081,7 @@ function applyTagEdit(tradeId, field, value) {
   saveTagOverride(tradeId, field, value);
   renderRegimeColorCards();
   renderStrategyPerformance();
+  renderStrategyRegimeHeatmap();
   renderTable();
   if (selectedTradeIdx === tradeId) showTradeDetail(tradeId);
 }
@@ -1191,6 +1377,7 @@ function render() {
   renderSummary();
   renderRegimeColorCards();
   renderStrategyPerformance();
+  renderStrategyRegimeHeatmap();
   renderEquityChart();
   renderDrawdownChart();
   // Sync drawdown to equity's time range after both have data
@@ -1438,7 +1625,9 @@ function renderStrategyPerformance() {
   const panels = regimes.map(r => {
     const data = computeStrategyExpectancy(trades, r.color);
     const withData = data.filter(d => d.count > 0);
-    const maxAbs = withData.length > 0 ? Math.max(...withData.map(d => Math.abs(d.expectancy))) : 1;
+    const useTotal = pnlDisplayMode === 'total';
+    const getVal = d => useTotal ? d.totalPnL : d.expectancy;
+    const maxAbs = withData.length > 0 ? Math.max(...withData.map(d => Math.abs(getVal(d)))) : 1;
     const rows = data.map(d => {
       if (d.count === 0) {
         return `<div class="strategy-bar-row">
@@ -1448,9 +1637,10 @@ function renderStrategyPerformance() {
           <div class="strategy-bar-n">n=0*</div>
         </div>`;
       }
-      const pct = Math.min(100, (Math.abs(d.expectancy) / maxAbs) * 100);
-      const barCls = d.expectancy >= 0 ? 'bar-positive' : 'bar-negative';
-      const valCls = d.expectancy >= 0 ? 'positive' : 'negative';
+      const val = getVal(d);
+      const pct = Math.min(100, (Math.abs(val) / maxAbs) * 100);
+      const barCls = val >= 0 ? 'bar-positive' : 'bar-negative';
+      const valCls = val >= 0 ? 'positive' : 'negative';
       const dagger = d.lowSample ? '\u2020' : '';
       const rowCls = d.lowSample ? ' low-sample' : '';
       return `<div class="strategy-bar-row${rowCls}">
@@ -1458,7 +1648,7 @@ function renderStrategyPerformance() {
         <div class="strategy-bar-container">
           <div class="strategy-bar ${barCls}" style="width:${pct}%"></div>
         </div>
-        <div class="strategy-bar-value ${valCls}">${fmtPnL(Math.round(d.expectancy))}</div>
+        <div class="strategy-bar-value ${valCls}">${fmtPnL(Math.round(val))}</div>
         <div class="strategy-bar-n">n=${d.count}${d.lowSample ? '*' : ''}</div>
       </div>`;
     }).join('');
@@ -1470,11 +1660,29 @@ function renderStrategyPerformance() {
       ${rows}
     </div>`;
   }).join('');
+  const spAvgActive = pnlDisplayMode === 'avg' ? ' active' : '';
+  const spTotalActive = pnlDisplayMode === 'total' ? ' active' : '';
+  const spModeLabel = pnlDisplayMode === 'total' ? 'Total P&L' : 'Avg P&L';
   document.getElementById('strategy-perf-section').innerHTML = `
-    <h2>Strategy Performance by Regime</h2>
-    <div class="strategy-perf-subtitle">\u2020 = thin cell (n &lt; 30), descriptive only &nbsp;&nbsp; * = small sample</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">
+      <h2>Strategy Performance by Regime</h2>
+      <div class="indicator-toggles" style="margin-bottom:0;">
+        <div class="indicator-toggle sp-pnl-toggle${spAvgActive}" data-pnl-mode="avg" style="color:#818cf8;border-color:#818cf8;background:rgba(99,102,241,0.1);">Avg P&L</div>
+        <div class="indicator-toggle sp-pnl-toggle${spTotalActive}" data-pnl-mode="total" style="color:#818cf8;border-color:#818cf8;background:rgba(99,102,241,0.1);">Total P&L</div>
+      </div>
+    </div>
+    <div class="strategy-perf-subtitle">Showing ${spModeLabel} · \u2020 = thin cell (n &lt; 30), descriptive only &nbsp;&nbsp; * = small sample</div>
     <div class="strategy-panels">${panels}</div>
   `;
+
+  // P&L mode toggle handler for strategy perf section
+  document.querySelectorAll('.sp-pnl-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      pnlDisplayMode = btn.dataset.pnlMode;
+      renderStrategyPerformance();
+      renderStrategyRegimeHeatmap();
+    });
+  });
 }
 
 function regimeColorToHex(color) {
