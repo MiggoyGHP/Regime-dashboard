@@ -54,11 +54,11 @@ const OVERLAY_CONFIG = {
 };
 
 const CHART_OPTS = {
-  layout: { background: { color: '#13161f' }, textColor: '#6b7189' },
-  grid: { vertLines: { color: '#1a1e2a' }, horzLines: { color: '#1a1e2a' } },
+  layout: { background: { color: '#18181b' }, textColor: '#52525b' },
+  grid: { vertLines: { color: '#2a2a2f' }, horzLines: { color: '#2a2a2f' } },
   crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-  rightPriceScale: { borderColor: '#1e2231' },
-  timeScale: { borderColor: '#1e2231', timeVisible: false },
+  rightPriceScale: { borderColor: '#33333a' },
+  timeScale: { borderColor: '#33333a', timeVisible: false },
   handleScroll: { vertTouchDrag: false },
 };
 
@@ -83,6 +83,7 @@ const REGIME_DESCRIPTIONS = {
   2: 'Market breadth — % stocks above moving avg',
   3: 'Cumulative net new highs vs new lows',
   4: 'SPY price vs 20/50 EMA structure',
+  5: 'SPY 10/20 EMA + CNHNL breadth confirmation',
 };
 
 // --- Helpers ---
@@ -247,8 +248,8 @@ function renderStrategyRegimeHeatmap() {
   document.getElementById('heatmap-section').innerHTML = `
     <div style="display:flex;align-items:center;justify-content:flex-end;margin-bottom:10px;">
       <div class="indicator-toggles" style="margin-bottom:0;">
-        <div class="indicator-toggle pnl-mode-toggle${avgActive}" data-pnl-mode="avg" style="color:#818cf8;border-color:#818cf8;background:rgba(99,102,241,0.1);">Avg P&L</div>
-        <div class="indicator-toggle pnl-mode-toggle${totalActive}" data-pnl-mode="total" style="color:#818cf8;border-color:#818cf8;background:rgba(99,102,241,0.1);">Total P&L</div>
+        <div class="indicator-toggle pnl-mode-toggle${avgActive}" data-pnl-mode="avg" style="color:#5a9ea0;border-color:#5a9ea0;background:rgba(90,158,160,0.1);">Avg P&L</div>
+        <div class="indicator-toggle pnl-mode-toggle${totalActive}" data-pnl-mode="total" style="color:#5a9ea0;border-color:#5a9ea0;background:rgba(90,158,160,0.1);">Total P&L</div>
       </div>
     </div>
     <div class="heatmap-subtitle">Showing ${modeLabel} \u00B7 Click column headers to sort \u00B7 Dimmed = &lt; 5 trades</div>
@@ -1101,8 +1102,8 @@ function renderStrategyPerformance() {
   document.getElementById('strategy-perf-section').innerHTML = `
     <div style="display:flex;align-items:center;justify-content:flex-end;margin-bottom:10px;">
       <div class="indicator-toggles" style="margin-bottom:0;">
-        <div class="indicator-toggle sp-pnl-toggle${spAvgActive}" data-pnl-mode="avg" style="color:#818cf8;border-color:#818cf8;background:rgba(99,102,241,0.1);">Avg P&L</div>
-        <div class="indicator-toggle sp-pnl-toggle${spTotalActive}" data-pnl-mode="total" style="color:#818cf8;border-color:#818cf8;background:rgba(99,102,241,0.1);">Total P&L</div>
+        <div class="indicator-toggle sp-pnl-toggle${spAvgActive}" data-pnl-mode="avg" style="color:#5a9ea0;border-color:#5a9ea0;background:rgba(90,158,160,0.1);">Avg P&L</div>
+        <div class="indicator-toggle sp-pnl-toggle${spTotalActive}" data-pnl-mode="total" style="color:#5a9ea0;border-color:#5a9ea0;background:rgba(90,158,160,0.1);">Total P&L</div>
       </div>
     </div>
     <div class="strategy-perf-subtitle">Showing ${spModeLabel} \u00B7 \u2020 = thin cell (n &lt; 30), descriptive only &nbsp;&nbsp; * = small sample</div>
@@ -1150,7 +1151,7 @@ function createEquityChart() {
     visible: false, scaleMargins: { top: 0, bottom: 0 },
   });
   equityLineSeries = equityChart.addLineSeries({
-    color: '#e1e4eb', lineWidth: 2,
+    color: '#d4d4d8', lineWidth: 2,
     lastValueVisible: true, priceLineVisible: false,
   });
   for (const [key, cfg] of Object.entries(OVERLAY_CONFIG)) {
@@ -1480,7 +1481,7 @@ function renderTradeChart(trade) {
   const markers = [
     {
       time: entryMarkerDate,
-      position: 'belowBar', color: '#3b82f6', shape: 'arrowUp',
+      position: 'belowBar', color: '#5a9ea0', shape: 'arrowUp',
       text: isOptions ? 'Entry' : `Entry $${entryPrice.toFixed(2)}`,
     },
     {
@@ -1494,7 +1495,7 @@ function renderTradeChart(trade) {
 
   if (!isOptions) {
     tradeSeries.createPriceLine({
-      price: entryPrice, color: '#3b82f6', lineWidth: 1,
+      price: entryPrice, color: '#5a9ea0', lineWidth: 1,
       lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: 'Entry',
     });
     tradeSeries.createPriceLine({
@@ -1509,7 +1510,7 @@ function renderTradeChart(trade) {
   macdContainer.style.display = 'block';
   macdChart = LightweightCharts.createChart(macdContainer, {
     ...CHART_OPTS,
-    rightPriceScale: { borderColor: '#2a2e3d', scaleMargins: { top: 0.1, bottom: 0.1 } },
+    rightPriceScale: { borderColor: '#2a2a2f', scaleMargins: { top: 0.1, bottom: 0.1 } },
   });
 
   const macdResult = calcMACD(allCloses, 12, 26, 9);
@@ -1553,7 +1554,7 @@ function renderTradeChart(trade) {
   macdSignalSeries.setData(signalData);
 
   macdHistSeries.createPriceLine({
-    price: 0, color: '#4b5563', lineWidth: 1,
+    price: 0, color: '#3f3f46', lineWidth: 1,
     lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: false,
   });
 
