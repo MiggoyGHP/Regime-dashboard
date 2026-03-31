@@ -84,6 +84,7 @@ const REGIME_DESCRIPTIONS = {
   3: 'Cumulative net new highs vs new lows',
   4: 'SPY price vs 20/50 EMA structure',
   5: 'SPY 10/20 EMA + CNHNL breadth confirmation',
+  6: 'SPY 10/20 EMA + VIX EMA early warning',
 };
 
 // --- Helpers ---

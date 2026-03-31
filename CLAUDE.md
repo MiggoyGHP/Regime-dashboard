@@ -35,6 +35,12 @@ Computes regime4 (SPY EMA) periods based on SPY price position relative to 20EMA
 
 Run: `python compute_spy_ema.py`
 
+### SPY EMA + VIX Regime Computation (`compute_spy_vix.py`)
+
+Computes regime6 (SPY EMA + VIX) periods combining SPY 10/20 EMA position with VIX EMA trend as an early warning signal. Green: SPY bullish structure + VIX calm (10EMA < 20EMA). Yellow: SPY bullish but VIX warning (10EMA > 20EMA for N days), or SPY between EMAs. Red: SPY below both EMAs or bearish structure. VIX EMA periods and confirmation days are configurable constants.
+
+Run: `python compute_spy_vix.py`
+
 ### Dashboard (`index.html`)
 
 ~1968-line single file containing all HTML, CSS, and JS. Loads `data.json` and `ohlc.json` at startup via fetch.
@@ -53,13 +59,15 @@ Key JS sections:
 - **Trade detail** (~1663-1885): Click a trade to see its OHLC chart with EMAs, MACD, entry/exit markers, and regime bands
 - **Trade table** (~1885-1968): Sortable, filterable, paginated table with inline tag editing and multi-select checkbox filters
 
-### Four Regime Methods
+### Six Regime Methods
 
 Stored in `data.json` under `regimePeriods` and `regimeTrades`:
 - **regime1** (Simple): SPY 10EMA/20EMA crossover
 - **regime2** (MMTH): Market breadth (% stocks above moving avg)
 - **regime3** (CNHNL): Cumulative Net Highs/Net Lows (computed by `compute_cnhnl.py`)
 - **regime4** (SPY EMA): SPY price vs 20EMA/50EMA structure (computed by `compute_spy_ema.py`)
+- **regime5** (Composite): SPY 10/20 EMA + CNHNL breadth confirmation (computed by `compute_composite.py`)
+- **regime6** (SPY+VIX): SPY 10/20 EMA + VIX EMA early warning (computed by `compute_spy_vix.py`)
 
 User switches between them via regime selector buttons; all dashboard sections re-render.
 
