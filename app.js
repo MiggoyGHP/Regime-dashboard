@@ -13,13 +13,13 @@ let selectedTradeIdx = null;
 let navList = null; // Array of tradeId values for arrow key navigation
 let equityChart, equityLineSeries, equityBandSeries = {};
 let drawdownBandSeries = {};
-let equityColorState = { Green: true, Yellow: true, Red: true };
+let equityColorState = {};
 let overlayState = { equity: true, spx: false, vix: false, mmth: false };
 let overlaySeries = {};
 let drawdownChart, drawdownSeries;
 let tradeChart, tradeSeries, macdChart;
 let tradeRegimeBandSeries = {};
-let tradeRegimeState = { Green: false, Yellow: false, Red: false };
+let tradeRegimeState = {};
 let tradeEmaSeries = {};
 let macdLineSeries, macdSignalSeries, macdHistSeries;
 let indicatorState = { ema10: false, ema20: false, ema25: false, ema50: false, ema200: false, macd: false };
@@ -85,7 +85,50 @@ const REGIME_DESCRIPTIONS = {
   4: 'SPY price vs 20/50 EMA structure',
   5: 'SPY 10/20 EMA + CNHNL breadth confirmation',
   6: 'SPY 10/20 EMA + VIX EMA early warning',
+  7: 'Wyckoff 4-regime — Structure x Breadth + VIX modifier',
+  8: 'GHP Regime Overlay — 8-criterion weekly scorecard (Price Structure + Breadth + Volatility)',
 };
+
+// --- Regime Color Registry ---
+const REGIME_COLOR_REGISTRY = {
+  default: [
+    { key: 'Green',        cls: 'green-card',        panelCls: 'panel-green',        hex: '#22c55e', dotCss: 'var(--green)',        bandRgba: 'rgba(34,197,94,0.18)',  label: 'Green' },
+    { key: 'Yellow-Green', cls: 'yellow-green-card',  panelCls: 'panel-yellow-green',  hex: '#f59e0b', dotCss: 'var(--yellow-green)', bandRgba: 'rgba(245,158,11,0.18)', label: 'Y-Green' },
+    { key: 'Yellow-Red',   cls: 'yellow-red-card',    panelCls: 'panel-yellow-red',    hex: '#06b6d4', dotCss: 'var(--yellow-red)',   bandRgba: 'rgba(6,182,212,0.18)',  label: 'Y-Red' },
+    { key: 'Red',          cls: 'red-card',           panelCls: 'panel-red',           hex: '#ef4444', dotCss: 'var(--red)',          bandRgba: 'rgba(239,68,68,0.18)',  label: 'Red' },
+  ],
+  regime7: [
+    { key: 'Green',  cls: 'green-card',  panelCls: 'panel-green',  hex: '#22c55e', dotCss: 'var(--green)',          bandRgba: 'rgba(34,197,94,0.18)',  label: 'Green' },
+    { key: 'Yellow', cls: 'yellow-card', panelCls: 'panel-yellow', hex: '#eab308', dotCss: 'var(--wyckoff-yellow)', bandRgba: 'rgba(234,179,8,0.18)',  label: 'Yellow' },
+    { key: 'Blue',   cls: 'blue-card',   panelCls: 'panel-blue',   hex: '#3b82f6', dotCss: 'var(--wyckoff-blue)',   bandRgba: 'rgba(59,130,246,0.18)', label: 'Blue' },
+    { key: 'Red',    cls: 'red-card',    panelCls: 'panel-red',    hex: '#ef4444', dotCss: 'var(--red)',            bandRgba: 'rgba(239,68,68,0.18)',  label: 'Red' },
+  ],
+  regime8: [
+    { key: 'Green',  cls: 'green-card',  panelCls: 'panel-green',  hex: '#22c55e', dotCss: 'var(--green)',          bandRgba: 'rgba(34,197,94,0.18)',  label: 'Green' },
+    { key: 'Yellow', cls: 'yellow-card', panelCls: 'panel-yellow', hex: '#eab308', dotCss: 'var(--wyckoff-yellow)', bandRgba: 'rgba(234,179,8,0.18)',  label: 'Yellow' },
+    { key: 'Red',    cls: 'red-card',    panelCls: 'panel-red',    hex: '#ef4444', dotCss: 'var(--red)',            bandRgba: 'rgba(239,68,68,0.18)',  label: 'Red' },
+  ],
+};
+
+// All possible color keys across all regimes (superset for chart band series)
+const ALL_BAND_COLORS = ['Green', 'Yellow-Green', 'Yellow-Red', 'Yellow', 'Blue', 'Red'];
+const ALL_BAND_CONFIG = {};
+for (const regKey of Object.keys(REGIME_COLOR_REGISTRY)) {
+  for (const c of REGIME_COLOR_REGISTRY[regKey]) {
+    ALL_BAND_CONFIG[c.key] = { top: c.bandRgba, bottom: c.bandRgba };
+  }
+}
+
+function getRegimeColorConfig() {
+  return REGIME_COLOR_REGISTRY['regime' + currentRegime] || REGIME_COLOR_REGISTRY.default;
+}
+function getRegimeColorKeys() {
+  return getRegimeColorConfig().map(c => c.key);
+}
+function getColorEntry(colorKey) {
+  const cfg = getRegimeColorConfig();
+  return cfg.find(c => c.key === colorKey) || { key: colorKey, cls: 'unknown-card', panelCls: '', hex: '#6b7280', dotCss: 'var(--unknown)', bandRgba: 'rgba(107,114,128,0.18)', label: colorKey };
+}
 
 // --- Helpers ---
 function strategyClass(s) { return s ? (STRATEGY_CLASS_MAP[s] || 'strat-Others') : ''; }
@@ -146,7 +189,7 @@ let heatmapSortCol = 'Total';
 let heatmapSortDir = -1;
 
 function computeHeatmapData(trades) {
-  const colors = ['Green', 'Yellow', 'Red'];
+  const colors = getRegimeColorKeys();
   const matrix = {};
   STRATEGY_VALUES.forEach(s => {
     matrix[s] = {};
@@ -194,8 +237,8 @@ function heatmapCellColor(val, count, mode) {
 function renderStrategyRegimeHeatmap() {
   const trades = getFilteredTrades();
   const matrix = computeHeatmapData(trades);
-  const colors = ['Green', 'Yellow', 'Red'];
-  const colorDots = { Green: 'var(--green)', Yellow: 'var(--yellow)', Red: 'var(--red)' };
+  const colorCfg = getRegimeColorConfig();
+  const colors = colorCfg.map(c => c.key);
 
   const isTotal = pnlDisplayMode === 'total';
   const valKey = isTotal ? 'totalPnL' : 'avgPnL';
@@ -207,8 +250,8 @@ function renderStrategyRegimeHeatmap() {
   });
 
   const sortArrow = col => heatmapSortCol === col ? (heatmapSortDir === -1 ? ' \u25BC' : ' \u25B2') : '';
-  const headerCells = colors.map(c =>
-    `<th class="heatmap-sort-header" data-sort-col="${c}" style="cursor:pointer;user-select:none;"><span class="color-dot" style="background:${colorDots[c]};display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle;"></span>${c}${sortArrow(c)}</th>`
+  const headerCells = colorCfg.map(c =>
+    `<th class="heatmap-sort-header" data-sort-col="${c.key}" style="cursor:pointer;user-select:none;"><span class="color-dot" style="background:${c.dotCss};display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle;"></span>${c.key}${sortArrow(c.key)}</th>`
   ).join('') + `<th class="heatmap-sort-header" data-sort-col="Total" style="cursor:pointer;user-select:none;">Total${sortArrow('Total')}</th>`;
 
   const rows = sorted.map(s => {
@@ -372,8 +415,8 @@ Promise.all([
 
 // --- Init ---
 function init() {
-  selectedColors = new Set(['Green', 'Yellow', 'Red', 'Unknown']);
-  selectedExitColors = new Set(['Green', 'Yellow', 'Red', 'Unknown']);
+  selectedColors = new Set([...getRegimeColorKeys(), 'Unknown']);
+  selectedExitColors = new Set([...getRegimeColorKeys(), 'Unknown']);
   selectedTypes = new Set(['Stocks', 'Equity and Index Options']);
   selectedStrategies = new Set([...STRATEGY_VALUES, '(Untagged)']);
   selectedTradeTypes = new Set([...TRADE_TYPE_VALUES, '(Untagged)']);
@@ -437,6 +480,14 @@ function setupRegimeButtons() {
         selectedTradeIdx = null;
         closeTradeDetail();
         updateRegimeDesc(regime);
+        // Rebuild color-dependent state for new regime
+        selectedColors = new Set([...getRegimeColorKeys(), 'Unknown']);
+        selectedExitColors = new Set([...getRegimeColorKeys(), 'Unknown']);
+        currentColorFilter = 'all';
+        setupEquityToggles();
+        setupTradeRegimeToggles();
+        setupColorFilter();
+        rebuildColorMultiSelects();
         render();
         content.classList.remove('transitioning');
       }, 150);
@@ -451,21 +502,21 @@ function updateRegimeDesc(regime) {
 // --- Color Filter (Performers) ---
 function setupColorFilter() {
   const container = document.getElementById('color-filter');
-  const colors = ['all', 'Green', 'Yellow', 'Red', 'Unknown'];
-  const labels = ['All', 'Green', 'Yellow', 'Red', 'Unknown'];
-  const dotColors = { Green: '#10b981', Yellow: '#f59e0b', Red: '#ef4444', Unknown: '#6b7280' };
-  colors.forEach((c, i) => {
+  container.innerHTML = '';
+  const colorCfg = getRegimeColorConfig();
+  const entries = [{ key: 'all', label: 'All', hex: null }, ...colorCfg.map(c => ({ key: c.key, label: c.label, hex: c.hex })), { key: 'Unknown', label: 'Unknown', hex: '#6b7280' }];
+  entries.forEach(e => {
     const btn = document.createElement('button');
-    btn.className = 'color-tab' + (c === 'all' ? ' active' : '');
-    if (c !== 'all') {
-      btn.innerHTML = `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${dotColors[c]};margin-right:4px;vertical-align:middle;"></span>${labels[i]}`;
+    btn.className = 'color-tab' + (e.key === 'all' ? ' active' : '');
+    if (e.hex) {
+      btn.innerHTML = `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${e.hex};margin-right:4px;vertical-align:middle;"></span>${e.label}`;
     } else {
-      btn.textContent = labels[i];
+      btn.textContent = e.label;
     }
     btn.addEventListener('click', () => {
       container.querySelectorAll('.color-tab').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      currentColorFilter = c;
+      currentColorFilter = e.key;
       renderPerformers();
     });
     container.appendChild(btn);
@@ -485,22 +536,32 @@ function setupIndicatorToggles() {
 }
 
 function setupEquityToggles() {
-  document.querySelectorAll('.indicator-toggle[data-eq-color]').forEach(btn => {
+  const container = document.getElementById('equity-color-toggles');
+  container.innerHTML = '';
+  const colorCfg = getRegimeColorConfig();
+  equityColorState = {};
+  colorCfg.forEach(c => {
+    equityColorState[c.key] = true;
+    const btn = document.createElement('div');
+    btn.className = 'indicator-toggle active';
+    btn.dataset.eqColor = c.key;
+    btn.style.cssText = `color:${c.hex}; border-color:${c.hex}; background:${c.bandRgba.replace('0.18', '0.1')};`;
+    btn.textContent = c.label;
     btn.addEventListener('click', () => {
-      const color = btn.dataset.eqColor;
-      equityColorState[color] = !equityColorState[color];
-      btn.classList.toggle('active', equityColorState[color]);
+      equityColorState[c.key] = !equityColorState[c.key];
+      btn.classList.toggle('active', equityColorState[c.key]);
       applyEquityVisibility();
     });
+    container.appendChild(btn);
   });
 }
 
 function applyEquityVisibility() {
   for (const [color, series] of Object.entries(equityBandSeries)) {
-    if (series) series.applyOptions({ visible: equityColorState[color] });
+    if (series) series.applyOptions({ visible: !!equityColorState[color] });
   }
   for (const [color, series] of Object.entries(drawdownBandSeries)) {
-    if (series) series.applyOptions({ visible: equityColorState[color] });
+    if (series) series.applyOptions({ visible: !!equityColorState[color] });
   }
 }
 
@@ -523,13 +584,23 @@ function applyOverlayVisibility() {
 }
 
 function setupTradeRegimeToggles() {
-  document.querySelectorAll('.indicator-toggle[data-trade-regime]').forEach(btn => {
+  const container = document.getElementById('trade-regime-toggles');
+  container.innerHTML = '';
+  const colorCfg = getRegimeColorConfig();
+  tradeRegimeState = {};
+  colorCfg.forEach(c => {
+    tradeRegimeState[c.key] = false;
+    const btn = document.createElement('div');
+    btn.className = 'indicator-toggle';
+    btn.dataset.tradeRegime = c.key;
+    btn.style.cssText = `color:${c.hex}; border-color:${c.hex}; background:${c.bandRgba.replace('0.18', '0.1')};`;
+    btn.textContent = c.label;
     btn.addEventListener('click', () => {
-      const color = btn.dataset.tradeRegime;
-      tradeRegimeState[color] = !tradeRegimeState[color];
-      btn.classList.toggle('active', tradeRegimeState[color]);
+      tradeRegimeState[c.key] = !tradeRegimeState[c.key];
+      btn.classList.toggle('active', tradeRegimeState[c.key]);
       applyTradeRegimeVisibility();
     });
+    container.appendChild(btn);
   });
 }
 
@@ -623,6 +694,17 @@ document.addEventListener('click', () => {
   document.querySelectorAll('.multi-select-btn').forEach(b => b.classList.remove('open'));
 });
 
+function rebuildColorMultiSelects() {
+  setupMultiSelect('entry-color-multi', [...getRegimeColorKeys(), 'Unknown'],
+    v => v, selectedColors, s => { selectedColors = s; currentPage = 1; render(); },
+    'All Entry Colors', 'Entry Colors'
+  );
+  setupMultiSelect('exit-color-multi', [...getRegimeColorKeys(), 'Unknown'],
+    v => v, selectedExitColors, s => { selectedExitColors = s; currentPage = 1; render(); },
+    'All Exit Colors', 'Exit Colors'
+  );
+}
+
 // --- Table Controls ---
 function setupTableControls() {
   document.getElementById('search-input').addEventListener('input', e => {
@@ -630,11 +712,11 @@ function setupTableControls() {
     currentPage = 1;
     renderTable();
   });
-  setupMultiSelect('entry-color-multi', ['Green', 'Yellow', 'Red', 'Unknown'],
+  setupMultiSelect('entry-color-multi', [...getRegimeColorKeys(), 'Unknown'],
     v => v, selectedColors, s => { selectedColors = s; currentPage = 1; render(); },
     'All Entry Colors', 'Entry Colors'
   );
-  setupMultiSelect('exit-color-multi', ['Green', 'Yellow', 'Red', 'Unknown'],
+  setupMultiSelect('exit-color-multi', [...getRegimeColorKeys(), 'Unknown'],
     v => v, selectedExitColors, s => { selectedExitColors = s; currentPage = 1; render(); },
     'All Exit Colors', 'Exit Colors'
   );
@@ -765,8 +847,9 @@ function getTrades() { return DATA.regimeTrades[`regime${currentRegime}`]; }
 function getStats() { return DATA.regimeStats[`regime${currentRegime}`]; }
 
 function allFiltersSelected() {
-  return selectedColors.size === 4 &&
-         selectedExitColors.size === 4 &&
+  const nColors = getRegimeColorKeys().length + 1; // +1 for Unknown
+  return selectedColors.size === nColors &&
+         selectedExitColors.size === nColors &&
          selectedTypes.size === 2 &&
          selectedStrategies.size === STRATEGY_VALUES.length + 1 &&
          selectedTradeTypes.size === TRADE_TYPE_VALUES.length + 1 &&
@@ -780,8 +863,9 @@ function updateFilterBanner() {
     return;
   }
   const parts = [];
-  if (selectedColors.size < 4) parts.push(`${selectedColors.size}/4 entry colors`);
-  if (selectedExitColors.size < 4) parts.push(`${selectedExitColors.size}/4 exit colors`);
+  const nColors = getRegimeColorKeys().length + 1;
+  if (selectedColors.size < nColors) parts.push(`${selectedColors.size}/${nColors} entry colors`);
+  if (selectedExitColors.size < nColors) parts.push(`${selectedExitColors.size}/${nColors} exit colors`);
   if (selectedTypes.size < 2) parts.push(`${selectedTypes.size}/2 types`);
   if (selectedStrategies.size < STRATEGY_VALUES.length + 1) parts.push(`${selectedStrategies.size}/${STRATEGY_VALUES.length + 1} strategies`);
   if (selectedTradeTypes.size < TRADE_TYPE_VALUES.length + 1) parts.push(`${selectedTradeTypes.size}/${TRADE_TYPE_VALUES.length + 1} trade types`);
@@ -795,8 +879,8 @@ function updateFilterBanner() {
 }
 
 function clearAllFilters() {
-  selectedColors = new Set(['Green', 'Yellow', 'Red', 'Unknown']);
-  selectedExitColors = new Set(['Green', 'Yellow', 'Red', 'Unknown']);
+  selectedColors = new Set([...getRegimeColorKeys(), 'Unknown']);
+  selectedExitColors = new Set([...getRegimeColorKeys(), 'Unknown']);
   selectedTypes = new Set(['Stocks', 'Equity and Index Options']);
   selectedStrategies = new Set([...STRATEGY_VALUES, '(Untagged)']);
   selectedTradeTypes = new Set([...TRADE_TYPE_VALUES, '(Untagged)']);
@@ -987,9 +1071,7 @@ function renderStatBar() {
 function renderRegimeColorCards() {
   const trades = getFilteredTrades();
   const colors = [
-    { key: 'Green', cls: 'green-card', dotColor: 'var(--green)' },
-    { key: 'Yellow', cls: 'yellow-card', dotColor: 'var(--yellow)' },
-    { key: 'Red', cls: 'red-card', dotColor: 'var(--red)' },
+    ...getRegimeColorConfig().map(c => ({ key: c.key, cls: c.cls, dotColor: c.dotCss })),
     { key: 'Unknown', cls: 'unknown-card', dotColor: 'var(--unknown)' },
   ];
   const ttLabels = { 'Trade A': 'A', 'Trade B': 'B', 'Trade E': 'E' };
@@ -1054,11 +1136,7 @@ function renderRegimeColorCards() {
 // --- Strategy Performance ---
 function renderStrategyPerformance() {
   const trades = getFilteredTrades();
-  const regimes = [
-    { color: 'Green', cls: 'panel-green', dotColor: 'var(--green)' },
-    { color: 'Yellow', cls: 'panel-yellow', dotColor: 'var(--yellow)' },
-    { color: 'Red', cls: 'panel-red', dotColor: 'var(--red)' },
-  ];
+  const regimes = getRegimeColorConfig().map(c => ({ color: c.key, cls: c.panelCls, dotColor: c.dotCss }));
   const panels = regimes.map(r => {
     const data = computeStrategyExpectancy(trades, r.color);
     const withData = data.filter(d => d.count > 0);
@@ -1122,23 +1200,14 @@ function renderStrategyPerformance() {
 
 // --- Chart Creation ---
 function regimeColorToHex(color) {
-  switch(color) {
-    case 'Green': return '#22c55e';
-    case 'Yellow': return '#eab308';
-    case 'Red': return '#ef4444';
-    default: return '#6b7280';
-  }
+  const entry = getColorEntry(color);
+  return entry.hex;
 }
 
 function createEquityChart() {
   const container = document.getElementById('equity-chart');
   equityChart = LightweightCharts.createChart(container, CHART_OPTS);
-  const bandColors = {
-    Green:  { top: 'rgba(34,197,94,0.18)',  bottom: 'rgba(34,197,94,0.18)' },
-    Yellow: { top: 'rgba(234,179,8,0.18)',   bottom: 'rgba(234,179,8,0.18)' },
-    Red:    { top: 'rgba(239,68,68,0.18)',   bottom: 'rgba(239,68,68,0.18)' },
-  };
-  for (const [color, fill] of Object.entries(bandColors)) {
+  for (const [color, fill] of Object.entries(ALL_BAND_CONFIG)) {
     equityBandSeries[color] = equityChart.addAreaSeries({
       lineWidth: 0, lineColor: 'transparent',
       topColor: fill.top, bottomColor: fill.bottom,
@@ -1181,10 +1250,11 @@ function getRegimeColorForDate(date, regimeKey) {
 }
 
 function buildRegimeBandData(dates, regimeKey) {
-  const bands = { Green: [], Yellow: [], Red: [] };
+  const bands = {};
+  for (const c of ALL_BAND_COLORS) bands[c] = [];
   for (let i = 0; i < dates.length; i++) {
     const color = getRegimeColorForDate(dates[i], regimeKey);
-    for (const c of ['Green', 'Yellow', 'Red']) {
+    for (const c of ALL_BAND_COLORS) {
       bands[c].push({ time: dates[i], value: color === c ? 1 : 0 });
     }
   }
@@ -1201,8 +1271,8 @@ function renderEquityChart() {
   const regimeKey = 'regime' + currentRegime;
   equityLineSeries.setData(ec.map(e => ({ time: e.date, value: e.cumPnL })));
   const bands = buildRegimeBandData(ec.map(e => e.date), regimeKey);
-  for (const color of ['Green', 'Yellow', 'Red']) {
-    equityBandSeries[color].setData(bands[color]);
+  for (const color of ALL_BAND_COLORS) {
+    if (equityBandSeries[color]) equityBandSeries[color].setData(bands[color]);
   }
   const overlays = DATA.overlays || {};
   for (const key of Object.keys(OVERLAY_CONFIG)) {
@@ -1214,12 +1284,7 @@ function renderEquityChart() {
 function createDrawdownChart() {
   const container = document.getElementById('drawdown-chart');
   drawdownChart = LightweightCharts.createChart(container, CHART_OPTS);
-  const bandColors = {
-    Green:  { top: 'rgba(34,197,94,0.18)',  bottom: 'rgba(34,197,94,0.18)' },
-    Yellow: { top: 'rgba(234,179,8,0.18)',   bottom: 'rgba(234,179,8,0.18)' },
-    Red:    { top: 'rgba(239,68,68,0.18)',   bottom: 'rgba(239,68,68,0.18)' },
-  };
-  for (const [color, fill] of Object.entries(bandColors)) {
+  for (const [color, fill] of Object.entries(ALL_BAND_CONFIG)) {
     drawdownBandSeries[color] = drawdownChart.addAreaSeries({
       lineWidth: 0, lineColor: 'transparent',
       topColor: fill.top, bottomColor: fill.bottom,
@@ -1242,8 +1307,8 @@ function renderDrawdownChart() {
   const regimeKey = 'regime' + currentRegime;
   drawdownSeries.setData(ec.map(e => ({ time: e.date, value: e.drawdown })));
   const bands = buildRegimeBandData(ec.map(e => e.date), regimeKey);
-  for (const color of ['Green', 'Yellow', 'Red']) {
-    drawdownBandSeries[color].setData(bands[color]);
+  for (const color of ALL_BAND_COLORS) {
+    if (drawdownBandSeries[color]) drawdownBandSeries[color].setData(bands[color]);
   }
   drawdownChart.timeScale().fitContent();
 }
@@ -1423,20 +1488,15 @@ function renderTradeChart(trade) {
 
   // Regime background bands
   tradeRegimeBandSeries = {};
-  const tradeBandColors = {
-    Green:  { top: 'rgba(34,197,94,0.18)',  bottom: 'rgba(34,197,94,0.18)' },
-    Yellow: { top: 'rgba(234,179,8,0.18)',   bottom: 'rgba(234,179,8,0.18)' },
-    Red:    { top: 'rgba(239,68,68,0.18)',   bottom: 'rgba(239,68,68,0.18)' },
-  };
   const regimeKey = 'regime' + currentRegime;
-  for (const [color, fill] of Object.entries(tradeBandColors)) {
+  for (const [color, fill] of Object.entries(ALL_BAND_CONFIG)) {
     tradeRegimeBandSeries[color] = tradeChart.addAreaSeries({
       lineWidth: 0, lineColor: 'transparent',
       topColor: fill.top, bottomColor: fill.bottom,
       lineType: 1, priceScaleId: 'tradeRegime',
       lastValueVisible: false, priceLineVisible: false,
       crosshairMarkerVisible: false,
-      visible: tradeRegimeState[color],
+      visible: !!tradeRegimeState[color],
     });
   }
   tradeChart.priceScale('tradeRegime').applyOptions({
@@ -1444,8 +1504,8 @@ function renderTradeChart(trade) {
   });
   const tradeDates = candleData.map(d => d.time);
   const tradeRegimeBands = buildRegimeBandData(tradeDates, regimeKey);
-  for (const color of ['Green', 'Yellow', 'Red']) {
-    tradeRegimeBandSeries[color].setData(tradeRegimeBands[color]);
+  for (const color of ALL_BAND_COLORS) {
+    if (tradeRegimeBandSeries[color]) tradeRegimeBandSeries[color].setData(tradeRegimeBands[color]);
   }
 
   tradeSeries = tradeChart.addCandlestickSeries({
@@ -1667,8 +1727,9 @@ function updateTradesTabBadge() {
     badge.style.display = 'none';
   } else {
     let count = 0;
-    if (selectedColors.size < 4) count++;
-    if (selectedExitColors.size < 4) count++;
+    const nc = getRegimeColorKeys().length + 1;
+    if (selectedColors.size < nc) count++;
+    if (selectedExitColors.size < nc) count++;
     if (selectedTypes.size < 2) count++;
     if (selectedStrategies.size < STRATEGY_VALUES.length + 1) count++;
     if (selectedTradeTypes.size < TRADE_TYPE_VALUES.length + 1) count++;
