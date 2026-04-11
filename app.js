@@ -1489,36 +1489,50 @@ function renderTradeChart(trade) {
     tradeEmaSeries[key] = series;
   }
 
-  // Entry/exit markers
+  // Entry/exit markers — one arrow per fill (per trading day)
   const isOptions = trade.type === 'Equity and Index Options';
-  const entryMarkerDate = candleData.find(d => d.time >= trade.entryDate)?.time || candleData[0].time;
-  const exitMarkerDate = candleData.find(d => d.time >= trade.exitDate)?.time || candleData[candleData.length - 1].time;
+  const entryLegs = Array.isArray(trade.entryLegs) && trade.entryLegs.length ? trade.entryLegs : null;
+  const exitLegs = Array.isArray(trade.exitLegs) && trade.exitLegs.length ? trade.exitLegs : null;
 
-  const markers = [
-    {
-      time: entryMarkerDate,
+  const snapToCandle = (date, fallback) =>
+    candleData.find(d => d.time >= date)?.time || fallback;
+
+  const markers = [];
+
+  if (entryLegs) {
+    for (const leg of entryLegs) {
+      markers.push({
+        time: snapToCandle(leg.date, candleData[0].time),
+        position: 'belowBar', color: '#e5bb76', shape: 'arrowUp',
+        text: isOptions ? 'Entry' : `$${leg.price.toFixed(2)}`,
+      });
+    }
+  } else {
+    markers.push({
+      time: snapToCandle(trade.entryDate, candleData[0].time),
       position: 'belowBar', color: '#e5bb76', shape: 'arrowUp',
-      text: isOptions ? 'Entry' : `Entry $${entryPrice.toFixed(2)}`,
-    },
-    {
-      time: exitMarkerDate,
-      position: 'aboveBar', color: isWin ? '#30d158' : '#ff453a', shape: 'arrowDown',
-      text: isOptions ? `Exit ${fmtPnL(trade.pnl)}` : `Exit $${exitPrice.toFixed(2)}`,
-    },
-  ];
-  markers.sort((a, b) => a.time < b.time ? -1 : a.time > b.time ? 1 : 0);
-  tradeSeries.setMarkers(markers);
-
-  if (!isOptions) {
-    tradeSeries.createPriceLine({
-      price: entryPrice, color: '#e5bb76', lineWidth: 1,
-      lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: 'Entry',
-    });
-    tradeSeries.createPriceLine({
-      price: exitPrice, color: isWin ? '#30d158' : '#ff453a', lineWidth: 1,
-      lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: 'Exit',
+      text: isOptions ? 'Entry' : `$${entryPrice.toFixed(2)}`,
     });
   }
+
+  if (exitLegs) {
+    for (const leg of exitLegs) {
+      markers.push({
+        time: snapToCandle(leg.date, candleData[candleData.length - 1].time),
+        position: 'aboveBar', color: isWin ? '#30d158' : '#ff453a', shape: 'arrowDown',
+        text: isOptions ? `Exit ${fmtPnL(trade.pnl)}` : `$${leg.price.toFixed(2)}`,
+      });
+    }
+  } else {
+    markers.push({
+      time: snapToCandle(trade.exitDate, candleData[candleData.length - 1].time),
+      position: 'aboveBar', color: isWin ? '#30d158' : '#ff453a', shape: 'arrowDown',
+      text: isOptions ? `Exit ${fmtPnL(trade.pnl)}` : `$${exitPrice.toFixed(2)}`,
+    });
+  }
+
+  markers.sort((a, b) => a.time < b.time ? -1 : a.time > b.time ? 1 : 0);
+  tradeSeries.setMarkers(markers);
 
   tradeChart.timeScale().fitContent();
 

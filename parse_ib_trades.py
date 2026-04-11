@@ -48,6 +48,8 @@ class RoundTrip:
     fees: float
     status: str
     strategy: str = ''
+    entry_legs: list = field(default_factory=list)
+    exit_legs: list = field(default_factory=list)
 
 # ── CSV Parsing ───────────────────────────────────────────────────────────────
 
@@ -93,6 +95,23 @@ def parse_csv(filepath):
 
 # ── Round-Trip Grouping ───────────────────────────────────────────────────────
 
+def _legs_by_date(execs):
+    """Collapse per-execution fills into one weighted-avg leg per trading day."""
+    by_date = defaultdict(lambda: {'qty': 0.0, 'notional': 0.0})
+    for e in execs:
+        q = abs(e['qty'])
+        by_date[e['date']]['qty'] += q
+        by_date[e['date']]['notional'] += q * e['price']
+    return [
+        {
+            'date': d,
+            'qty': round(v['qty'], 4),
+            'price': round(v['notional'] / v['qty'], 6) if v['qty'] else 0,
+        }
+        for d, v in sorted(by_date.items())
+    ]
+
+
 def build_trip(symbol, asset_category, entries, exits, is_open=False):
     """Build a RoundTrip from entry and exit execution records."""
     if not entries:
@@ -127,6 +146,8 @@ def build_trip(symbol, asset_category, entries, exits, is_open=False):
         pnl=round(pnl, 2),
         fees=round(fees, 2),
         status='Open' if is_open else 'Closed',
+        entry_legs=_legs_by_date(entries),
+        exit_legs=_legs_by_date(exits) if exits else [],
     )
 
 
@@ -439,6 +460,8 @@ def assign_regime_colors(trades, all_regime_periods):
                 'primaryStrategy': '',
                 'tradeType': '',
                 'regimeColor': get_regime_color(t.entry_date, sorted_periods),
+                'entryLegs': t.entry_legs,
+                'exitLegs': t.exit_legs,
             }
             regime_trades.append(trade_dict)
         result[regime_key] = regime_trades
@@ -766,7 +789,8 @@ def main():
     # 7. Validate uniqueness of (symbol, entryDate)
     seen = set()
     dupes = 0
-    for t in regime_trades['regime1']:
+    first_regime_key = next(iter(regime_trades))
+    for t in regime_trades[first_regime_key]:
         key = (t['symbol'], t['entryDate'])
         if key in seen:
             dupes += 1
