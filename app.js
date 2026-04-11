@@ -413,8 +413,8 @@ Promise.all([
 
 // --- Init ---
 function init() {
-  selectedColors = new Set([...getRegimeColorKeys(), 'Unknown']);
-  selectedExitColors = new Set([...getRegimeColorKeys(), 'Unknown']);
+  selectedColors = new Set(getRegimeColorKeys());
+  selectedExitColors = new Set(getRegimeColorKeys());
   selectedTypes = new Set(['Stocks', 'Equity and Index Options']);
   selectedStrategies = new Set([...STRATEGY_VALUES, '(Untagged)']);
   selectedTradeTypes = new Set([...TRADE_TYPE_VALUES, '(Untagged)']);
@@ -462,7 +462,7 @@ function setupColorFilter() {
   const container = document.getElementById('color-filter');
   container.innerHTML = '';
   const colorCfg = getRegimeColorConfig();
-  const entries = [{ key: 'all', label: 'All', hex: null }, ...colorCfg.map(c => ({ key: c.key, label: c.label, hex: c.hex })), { key: 'Unknown', label: 'Unknown', hex: '#7a8290' }];
+  const entries = [{ key: 'all', label: 'All', hex: null }, ...colorCfg.map(c => ({ key: c.key, label: c.label, hex: c.hex }))];
   entries.forEach(e => {
     const btn = document.createElement('button');
     btn.className = 'color-tab' + (e.key === 'all' ? ' active' : '');
@@ -653,11 +653,11 @@ document.addEventListener('click', () => {
 });
 
 function rebuildColorMultiSelects() {
-  setupMultiSelect('entry-color-multi', [...getRegimeColorKeys(), 'Unknown'],
+  setupMultiSelect('entry-color-multi', getRegimeColorKeys(),
     v => v, selectedColors, s => { selectedColors = s; currentPage = 1; render(); },
     'All Entry Colors', 'Entry Colors'
   );
-  setupMultiSelect('exit-color-multi', [...getRegimeColorKeys(), 'Unknown'],
+  setupMultiSelect('exit-color-multi', getRegimeColorKeys(),
     v => v, selectedExitColors, s => { selectedExitColors = s; currentPage = 1; render(); },
     'All Exit Colors', 'Exit Colors'
   );
@@ -670,11 +670,11 @@ function setupTableControls() {
     currentPage = 1;
     renderTable();
   });
-  setupMultiSelect('entry-color-multi', [...getRegimeColorKeys(), 'Unknown'],
+  setupMultiSelect('entry-color-multi', getRegimeColorKeys(),
     v => v, selectedColors, s => { selectedColors = s; currentPage = 1; render(); },
     'All Entry Colors', 'Entry Colors'
   );
-  setupMultiSelect('exit-color-multi', [...getRegimeColorKeys(), 'Unknown'],
+  setupMultiSelect('exit-color-multi', getRegimeColorKeys(),
     v => v, selectedExitColors, s => { selectedExitColors = s; currentPage = 1; render(); },
     'All Exit Colors', 'Exit Colors'
   );
@@ -805,7 +805,7 @@ function getTrades() { return DATA.regimeTrades[`regime${currentRegime}`]; }
 function getStats() { return DATA.regimeStats[`regime${currentRegime}`]; }
 
 function allFiltersSelected() {
-  const nColors = getRegimeColorKeys().length + 1; // +1 for Unknown
+  const nColors = getRegimeColorKeys().length;
   return selectedColors.size === nColors &&
          selectedExitColors.size === nColors &&
          selectedTypes.size === 2 &&
@@ -821,7 +821,7 @@ function updateFilterBanner() {
     return;
   }
   const parts = [];
-  const nColors = getRegimeColorKeys().length + 1;
+  const nColors = getRegimeColorKeys().length;
   if (selectedColors.size < nColors) parts.push(`${selectedColors.size}/${nColors} entry colors`);
   if (selectedExitColors.size < nColors) parts.push(`${selectedExitColors.size}/${nColors} exit colors`);
   if (selectedTypes.size < 2) parts.push(`${selectedTypes.size}/2 types`);
@@ -837,8 +837,8 @@ function updateFilterBanner() {
 }
 
 function clearAllFilters() {
-  selectedColors = new Set([...getRegimeColorKeys(), 'Unknown']);
-  selectedExitColors = new Set([...getRegimeColorKeys(), 'Unknown']);
+  selectedColors = new Set(getRegimeColorKeys());
+  selectedExitColors = new Set(getRegimeColorKeys());
   selectedTypes = new Set(['Stocks', 'Equity and Index Options']);
   selectedStrategies = new Set([...STRATEGY_VALUES, '(Untagged)']);
   selectedTradeTypes = new Set([...TRADE_TYPE_VALUES, '(Untagged)']);
