@@ -90,7 +90,7 @@
   0%, 100% { opacity: 0.9; transform: translate(0, 0) scale(1); }
   50%      { opacity: 1;   transform: translate(2%, -1%) scale(1.05); }
 }
-body > *:not(.aura-bg) { position: relative; z-index: 1; }
+body > *:not(.aura-bg):not(.trade-detail-overlay) { position: relative; z-index: 1; }
 
 /* --- Number rollup animation --- */
 @keyframes number-rollup {
