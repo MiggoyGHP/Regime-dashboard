@@ -842,6 +842,13 @@ body {
 }
 .indicator-toggle.active { opacity: 1; }
 .indicator-toggle:not(.active) { opacity: 0.4; }
+#equity-color-toggles,
+#trade-regime-toggles {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  flex-wrap: wrap;
+}
 .toggle-separator {
   width: 1px;
   height: 18px;

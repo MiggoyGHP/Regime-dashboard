@@ -87,7 +87,7 @@ const STRATEGY_CLASS_MAP = {
 // --- Regime Color Registry (GHP Overlay — 3-color palette) ---
 const REGIME_COLOR_CONFIG = [
   { key: 'Green',  cls: 'green-card',  panelCls: 'panel-green',  hex: '#30d158', dotCss: 'var(--green)',          bandRgba: 'rgba(48,209,88,0.16)',    label: 'Green' },
-  { key: 'Yellow', cls: 'yellow-card', panelCls: 'panel-yellow', hex: '#e5bb76', dotCss: 'var(--primary)',        bandRgba: 'rgba(229,187,118,0.16)',  label: 'Yellow' },
+  { key: 'Yellow', cls: 'yellow-card', panelCls: 'panel-yellow', hex: '#ffd60a', dotCss: 'var(--primary)',        bandRgba: 'rgba(255,214,10,0.22)',   label: 'Yellow' },
   { key: 'Red',    cls: 'red-card',    panelCls: 'panel-red',    hex: '#ff453a', dotCss: 'var(--red)',            bandRgba: 'rgba(255,69,58,0.16)',    label: 'Red' },
 ];
 
