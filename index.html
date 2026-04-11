@@ -5,15 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Regime Performance Dashboard</title>
 <script src="lightweight-charts.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+<div class="aura-bg"></div>
 
 <header class="header">
   <div class="header-top">
     <div class="header-brand">
-      <h1><span>Regime</span> Performance Dashboard</h1>
-      <div class="regime-desc" id="regime-desc">GHP Regime Overlay — 8-criterion weekly scorecard</div>
+      <h1><span class="brand-gradient-text">GHP</span> Performance Dashboard</h1>
+      <div class="regime-desc" id="regime-desc">Regime Overlay — 8-criterion weekly scorecard</div>
     </div>
   </div>
   <nav class="view-nav">
@@ -40,10 +44,10 @@
         <span id="equity-color-toggles"></span>
         <div class="toggle-separator"></div>
         <span class="toggle-label">Overlays:</span>
-        <div class="indicator-toggle active" data-overlay="equity" style="color:#d4d4d8; border-color:#d4d4d8; background:rgba(212,212,216,0.08);">Equity</div>
-        <div class="indicator-toggle" data-overlay="spx" style="color:#3b82f6; border-color:#3b82f6; background:rgba(59,130,246,0.1);">SPX</div>
-        <div class="indicator-toggle" data-overlay="vix" style="color:#f97316; border-color:#f97316; background:rgba(249,115,22,0.1);">VIX</div>
-        <div class="indicator-toggle" data-overlay="mmth" style="color:#a855f7; border-color:#a855f7; background:rgba(168,85,247,0.1);">MMTH</div>
+        <div class="indicator-toggle active" data-overlay="equity" style="color:#e5bb76; border-color:#e5bb76; background:rgba(229,187,118,0.12);">Equity</div>
+        <div class="indicator-toggle" data-overlay="spx" style="color:#7fb3d9; border-color:#7fb3d9; background:rgba(127,179,217,0.12);">SPX</div>
+        <div class="indicator-toggle" data-overlay="vix" style="color:#ff9a7a; border-color:#ff9a7a; background:rgba(255,154,122,0.12);">VIX</div>
+        <div class="indicator-toggle" data-overlay="mmth" style="color:#c9a4e0; border-color:#c9a4e0; background:rgba(201,164,224,0.12);">MMTH</div>
       </div>
       <div id="equity-chart"></div>
     </div>
@@ -162,14 +166,14 @@
       <span id="trade-regime-toggles"></span>
       <div class="toggle-separator"></div>
       <span class="toggle-label">EMAs:</span>
-      <div class="indicator-toggle" data-indicator="ema10" style="color:#f59e0b; border-color:#f59e0b; background:rgba(245,158,11,0.1);">10</div>
-      <div class="indicator-toggle" data-indicator="ema20" style="color:#3b82f6; border-color:#3b82f6; background:rgba(59,130,246,0.1);">20</div>
-      <div class="indicator-toggle" data-indicator="ema25" style="color:#8b5cf6; border-color:#8b5cf6; background:rgba(139,92,246,0.1);">25</div>
-      <div class="indicator-toggle" data-indicator="ema50" style="color:#ec4899; border-color:#ec4899; background:rgba(236,72,153,0.1);">50</div>
-      <div class="indicator-toggle" data-indicator="ema200" style="color:#ef4444; border-color:#ef4444; background:rgba(239,68,68,0.1);">200</div>
+      <div class="indicator-toggle" data-indicator="ema10" style="color:#f0cc90; border-color:#f0cc90; background:rgba(240,204,144,0.12);">10</div>
+      <div class="indicator-toggle" data-indicator="ema20" style="color:#e5bb76; border-color:#e5bb76; background:rgba(229,187,118,0.12);">20</div>
+      <div class="indicator-toggle" data-indicator="ema25" style="color:#cfa45d; border-color:#cfa45d; background:rgba(207,164,93,0.12);">25</div>
+      <div class="indicator-toggle" data-indicator="ema50" style="color:#a37f3f; border-color:#a37f3f; background:rgba(163,127,63,0.18);">50</div>
+      <div class="indicator-toggle" data-indicator="ema200" style="color:#7a5f2e; border-color:#7a5f2e; background:rgba(122,95,46,0.22);">200</div>
       <div class="toggle-separator"></div>
       <span class="toggle-label">MACD:</span>
-      <div class="indicator-toggle" data-indicator="macd" style="color:#06b6d4; border-color:#06b6d4; background:rgba(6,182,212,0.1);">12,26,9</div>
+      <div class="indicator-toggle" data-indicator="macd" style="color:#7fb3d9; border-color:#7fb3d9; background:rgba(127,179,217,0.12);">12,26,9</div>
     </div>
     <div id="trade-chart"></div>
     <div id="macd-chart"></div>
