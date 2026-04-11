@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Single-page trading performance dashboard that analyzes Interactive Brokers trades under eight market regime classification methods. No build system, no framework — just vanilla HTML/JS/CSS in `index.html` with a Python data pipeline.
+Single-page trading performance dashboard that analyzes Interactive Brokers trades under the GHP Regime Overlay classification. No build system, no framework — just vanilla HTML/JS/CSS split across `index.html`, `app.js`, `styles.css`, with a Python data pipeline.
 
 ## Architecture
 
@@ -13,7 +13,7 @@ Single-page trading performance dashboard that analyzes Interactive Brokers trad
 Processes IB CSV statements into `data.json`:
 1. Parses IB CSV execution records → groups into round-trip trades (handles partial fills, C;O flip trades)
 2. Detects and merges multi-leg option combos (iron condors, spreads) into single trades
-3. Assigns regime colors (Green/Yellow/Red/Unknown) based on **entry date** against four regime period definitions
+3. Assigns regime colors (Green/Yellow/Red/Unknown) based on **entry date** against the regime8 period definitions
 4. Enriches trades with strategy/trade type tags from `TMS data.csv`
 5. Builds equity curve, downloads SPX/VIX/MMTH overlay data via yfinance
 6. Auto-syncs OHLC candle data for traded symbols to `ohlc.json`
@@ -23,86 +23,31 @@ Dependencies: `openpyxl`, `yfinance`. Input files are hardcoded paths to IB CSVs
 
 Run: `python parse_ib_trades.py`
 
-### MMTH Breadth Regime Computation (`compute_mmth.py`)
-
-Computes regime2 (MMTH) periods using MMTH 10EMA/20EMA trend direction combined with absolute breadth level. Green: 10EMA > 20EMA AND close > 50% (broad + improving). Yellow: trend/level disagree (recovering or deteriorating). Red: 10EMA < 20EMA AND close ≤ 50% (narrow + worsening). Reads pre-computed MMTH data from `INDEX_MMTH, 1D_de5f6.csv`.
-
-Run: `python compute_mmth.py`
-
-### CNHNL Regime Computation (`compute_cnhnl.py`)
-
-Computes regime3 (CNHNL) periods by replicating Matt Caruso's Net Highs/Lows v6 TradingView indicator. Downloads NASDAQ equity data, computes cumulative net highs minus net lows, and outputs regime periods to `data.json`. Uses a pickle cache (`cnhnl_cache.pkl`) for downloaded data.
-
-Run: `python compute_cnhnl.py`
-
-### SPY EMA Regime Computation (`compute_spy_ema.py`)
-
-Computes regime4 (SPY EMA) periods based on SPY price position relative to 20EMA and 50EMA. Green: price > 20EMA > 50EMA. Yellow: price between EMAs (20EMA > price > 50EMA). Red: price < 50EMA or bearish EMA structure.
-
-Run: `python compute_spy_ema.py`
-
-### SPY EMA + VIX Regime Computation (`compute_spy_vix.py`)
-
-Computes regime6 (SPY EMA + VIX) periods combining SPY 10/20 EMA position with VIX EMA trend as an early warning signal. Green: SPY bullish structure + VIX calm (10EMA < 20EMA). Yellow: SPY bullish but VIX warning (10EMA > 20EMA for N days), or SPY between EMAs. Red: SPY below both EMAs or bearish structure. VIX EMA periods and confirmation days are configurable constants.
-
-Run: `python compute_spy_vix.py`
-
-### Wyckoff 4-Regime Computation (`compute_wyckoff.py`)
-
-Computes regime7 (Wyckoff) periods using a 3-layer checklist inspired by Wyckoff market phases. L1 Structure: SPY > 20EMA > 50EMA. L2 Momentum: SPY 10/20 EMA hard gate + VIX 10/20 EMA modifier. L3 Breadth: MMTH 10/20 EMA trend + 50% level. 4 colors: Green (Markup), Yellow (Distribution), Blue (Accumulation), Red (Markdown). Reads SPY from `BATS_SPY, 1D_f9092.csv`, VIX from `TVC_VIX, 1D_90f96.csv`, MMTH from `INDEX_MMTH, 1D_de5f6.csv`.
-
-Run: `python compute_wyckoff.py`
-
 ### GHP Regime Overlay Computation (`compute_ghp_regime.py`)
 
 Computes regime8 (GHP Overlay) periods by replicating the Pine Script `regime_classifier_v4_1.pine` 8-criterion scorecard. Price Structure (3): SPY close vs 20/50 EMA. Market Breadth (3): MMFI > 50%, MMTH > 50%, 5-day rolling net highs-lows > 0. Volatility (2): VIX < 20, VIX < 50 EMA. Score 6-8 = Green, 3-5 = Yellow, 0-2 = Red. Emergency overrides: VIX > 35 or SPY gap down <= -4% forces Red. Weekly assessment mode (default): score locks on Friday, holds through the week. Uses prior-day values for anti-repaint. Reads SPY from `BATS_SPY, 1D_f9092.csv`, VIX from `TVC_VIX, 1D_90f96.csv`, MMTH from `INDEX_MMTH, 1D_de5f6.csv`, breadth from `COMEX_DL_GC1!, 1D_7152b.csv`.
 
 Run: `python compute_ghp_regime.py`
 
-### Dashboard (`index.html`)
+### Dashboard (`index.html` + `app.js` + `styles.css`)
 
-~1968-line single file containing all HTML, CSS, and JS. Loads `data.json` and `ohlc.json` at startup via fetch.
+Three-file vanilla frontend. `index.html` holds structure, `app.js` holds all logic, `styles.css` holds styles. Loads `data.json` and `ohlc.json` at startup via fetch. The UI exposes only the GHP Overlay regime — there is no regime selector.
 
-Key JS sections:
-- **State** (lines ~698-725): Global state variables for regime selection, filters, chart instances, multi-select filter state
-- **Config** (~729-748): EMA, overlay, and chart styling configuration constants
-- **Tag overrides** (~760-840): localStorage-based inline editing of strategy/trade type tags
-- **init** (~894-1030): Entry point loads both JSON files, sets up event handlers (regime buttons, search, sort, multi-select filters, date range)
-- **Multi-select filters** (~1030-1165): Checkbox dropdown filters for color, type, strategy, trade type; date range filter for equity curve
-- **render** (~1165-1300): Master render function dispatches to sub-renderers based on filtered trades
-- **Summary/regime cards** (~1302-1390): Computes and renders top-level stats and per-color regime breakdowns with trade type stats (worst trade, edge ratio per type)
-- **Strategy performance** (~1390-1520): Per-strategy breakdown tables within regime cards
-- **Equity/drawdown charts** (~1520-1600): TradingView Lightweight Charts with regime-colored bands, crosshair sync, SPX/VIX/MMTH overlays
-- **Top/bottom performers** (~1598-1660): Best and worst trades with regime color filter tabs
-- **Trade detail** (~1663-1885): Click a trade to see its OHLC chart with EMAs, MACD, entry/exit markers, and regime bands
-- **Trade table** (~1885-1968): Sortable, filterable, paginated table with inline tag editing and multi-select checkbox filters
+### Regime Classification
 
-### Eight Regime Methods
+Only one regime method ships: **regime8 (GHP Overlay)** — 8-criterion weekly scorecard (Price Structure + Breadth + Volatility) with emergency overrides. Computed by `compute_ghp_regime.py`. Uses 3 colors: Green / Yellow / Red.
 
-Stored in `data.json` under `regimePeriods` and `regimeTrades`:
-- **regime1** (Simple): SPY 10EMA/20EMA crossover
-- **regime2** (MMTH): Market breadth EMA trend + level (computed by `compute_mmth.py`)
-- **regime3** (CNHNL): Cumulative Net Highs/Net Lows (computed by `compute_cnhnl.py`)
-- **regime4** (SPY EMA): SPY price vs 20EMA/50EMA structure (computed by `compute_spy_ema.py`)
-- **regime5** (Composite): SPY 10/20 EMA + CNHNL breadth confirmation (computed by `compute_composite.py`)
-- **regime6** (SPY+VIX): SPY 10/20 EMA + VIX EMA early warning (computed by `compute_spy_vix.py`)
-- **regime7** (Wyckoff): 4-color Wyckoff phases — Structure x Breadth matrix + VIX modifier (computed by `compute_wyckoff.py`)
-- **regime8** (GHP Overlay): 8-criterion weekly scorecard — Price Structure + Breadth + Volatility with emergency overrides (computed by `compute_ghp_regime.py`)
-
-User switches between them via regime selector buttons; all dashboard sections re-render.
+Stored in `data.json` under `regimePeriods.regime8`, `regimeTrades.regime8`, `regimeStats.regime8`.
 
 ### Data Files
 
-- `data.json` (~850KB): All computed metrics, trades, regime periods, overlays. Regenerated by the Python script.
+- `data.json`: All computed metrics, trades, regime periods, overlays. Regenerated by the Python script.
 - `ohlc.json` (~18MB): OHLC candle data per symbol for trade detail charts. Auto-synced by Python script.
 - `TMS data.csv`: External trade management system export with strategy/trade type tags
-- `MMTH data.xlsx`: Market breadth data for regime2 overlay (legacy)
-- `INDEX_MMTH, 1D_de5f6.csv`: MMTH daily data with pre-computed 10EMA/20EMA for `compute_mmth.py`
 - `lightweight-charts.js`: Vendored TradingView Lightweight Charts library
-- `cnhnl_cache.pkl`: Cached NASDAQ equity data for CNHNL computation (gitignored)
-- `nasdaq_equities.txt`: NASDAQ symbol list used by `compute_cnhnl.py`
-- `BATS_SPY, 1D_f9092.csv`: SPY daily data with 20EMA/10EMA for `compute_wyckoff.py`
-- `TVC_VIX, 1D_90f96.csv`: VIX daily data with 200/50/20/10 EMAs for `compute_wyckoff.py`
+- `BATS_SPY, 1D_f9092.csv`: SPY daily data with 20EMA/10EMA for `compute_ghp_regime.py`
+- `TVC_VIX, 1D_90f96.csv`: VIX daily data with 200/50/20/10 EMAs for `compute_ghp_regime.py`
+- `INDEX_MMTH, 1D_de5f6.csv`: MMTH daily data with 10/20 EMA for `compute_ghp_regime.py`
 - `COMEX_DL_GC1!, 1D_7152b.csv`: Breadth data with YRLO.US, YRHI.US, MMFI columns for `compute_ghp_regime.py`
 - `test_field_names.js`: Test to verify regime stats field names in `data.json` match dashboard expectations
 
@@ -114,4 +59,5 @@ User switches between them via regime selector buttons; all dashboard sections r
 - Tag overrides (strategy/trade type edits made in the UI) persist in `localStorage` key `tagOverrides`
 - Charts use TradingView Lightweight Charts API (vendored, not from CDN)
 - Multi-select filters (color, type, strategy, trade type) use checkbox dropdowns; selecting subsets dynamically filters the equity curve and all dashboard stats
+- Regime colors are Green / Yellow / Red only (plus `Unknown` for trades outside any period)
 - Date range filter restricts the equity curve and stats to a custom date window

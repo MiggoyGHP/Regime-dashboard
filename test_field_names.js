@@ -35,7 +35,7 @@ const REQUIRED_REGIME_FIELDS = ['Avg P&L', 'Max Win', 'Avg Holding Period'];
 // Fields the dashboard JS reads from the 'All' stats object (optional - gracefully falls back to 0)
 const OPTIONAL_ALL_FIELDS = ['Median P&L'];
 
-for (const regimeKey of ['regime1', 'regime2', 'regime3']) {
+for (const regimeKey of ['regime8']) {
   const regimeStats = data.regimeStats[regimeKey];
   assert(regimeStats, `${regimeKey} exists in regimeStats`);
   if (!regimeStats) continue;

@@ -20,16 +20,17 @@
   --green: #22C55E;
   --green-bright: #34d399;
   --green-bg: rgba(34,197,94,0.10);
-  --yellow: #f59e0b;
-  --yellow-bright: #fbbf24;
-  --yellow-bg: rgba(245,158,11,0.10);
   --red: #EF4444;
   --red-bright: #f87171;
   --red-bg: rgba(239,68,68,0.10);
-  /* Muted teal accent (mapped to --blue vars for compatibility) */
+  /* Muted teal accent (generic UI accent, not a regime color) */
   --blue: #5a9ea0;
   --blue-bright: #6fb5b7;
   --blue-bg: rgba(90,158,160,0.10);
+  /* Regime yellow */
+  --wyckoff-yellow: #eab308;
+  --wyckoff-yellow-bright: #facc15;
+  --wyckoff-yellow-bg: rgba(234,179,8,0.10);
   --unknown: #6b7280;
   --unknown-bg: rgba(107,114,128,0.10);
   --radius: 12px;
@@ -96,37 +97,6 @@ body {
   font-size: 11px;
   color: var(--text-muted);
   margin-top: 2px;
-}
-
-/* --- Regime Selector --- */
-.regime-selector {
-  display: flex;
-  gap: 2px;
-  background: var(--card);
-  border-radius: 10px;
-  padding: 3px;
-  border: 1px solid var(--border);
-}
-.regime-btn {
-  padding: 7px 20px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--text-dim);
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 600;
-  transition: all 0.2s ease;
-  letter-spacing: -0.1px;
-}
-.regime-btn.active {
-  background: linear-gradient(135deg, #5a9ea0 0%, #4d8a8c 100%);
-  color: #fff;
-  box-shadow: 0 2px 10px rgba(90,158,160,0.25);
-}
-.regime-btn:hover:not(.active) {
-  color: var(--text);
-  background: rgba(255,255,255,0.04);
 }
 
 /* --- View Navigation --- */
@@ -284,10 +254,10 @@ body {
 .regime-color-card:hover { border-color: rgba(255,255,255,0.06); }
 .regime-color-card.green-card { border-left-color: var(--green); }
 .regime-color-card.green-card:hover { border-color: rgba(16,185,129,0.2); border-left-color: var(--green); }
-.regime-color-card.yellow-card { border-left-color: var(--yellow); }
-.regime-color-card.yellow-card:hover { border-color: rgba(245,158,11,0.2); border-left-color: var(--yellow); }
 .regime-color-card.red-card { border-left-color: var(--red); }
 .regime-color-card.red-card:hover { border-color: rgba(239,68,68,0.2); border-left-color: var(--red); }
+.regime-color-card.yellow-card { border-left-color: var(--wyckoff-yellow); }
+.regime-color-card.yellow-card:hover { border-color: rgba(234,179,8,0.2); border-left-color: var(--wyckoff-yellow); }
 .regime-color-card.unknown-card { border-left-color: var(--unknown); }
 .regime-color-card.unknown-card:hover { border-color: rgba(107,114,128,0.2); border-left-color: var(--unknown); }
 .regime-color-card .color-label {
@@ -391,8 +361,8 @@ body {
   border-top: 2px solid;
 }
 .strategy-panel.panel-green { border-top-color: var(--green); }
-.strategy-panel.panel-yellow { border-top-color: var(--yellow); }
 .strategy-panel.panel-red { border-top-color: var(--red); }
+.strategy-panel.panel-yellow { border-top-color: var(--wyckoff-yellow); }
 .strategy-panel-title {
   font-size: 13px;
   font-weight: 600;
@@ -857,7 +827,6 @@ tbody td { padding: 10px 12px; }
   letter-spacing: 0.2px;
 }
 .badge-Green { background: var(--green-bg); color: var(--green); }
-.badge-Yellow { background: var(--yellow-bg); color: var(--yellow); }
 .badge-Red { background: var(--red-bg); color: var(--red); }
 .badge-Unknown { background: var(--unknown-bg); color: var(--unknown); }
 

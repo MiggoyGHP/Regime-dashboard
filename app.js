@@ -6,7 +6,7 @@
 // --- State ---
 let DATA = null;
 let OHLC = null;
-let currentRegime = 1;
+let currentRegime = 8;
 let currentView = 'overview';
 let currentColorFilter = 'all';
 let selectedTradeIdx = null;
@@ -77,57 +77,27 @@ const STRATEGY_CLASS_MAP = {
   'Range': 'strat-Range', 'Reset': 'strat-Reset', 'Reversal': 'strat-Reversal',
 };
 
-// --- Regime Descriptions ---
-const REGIME_DESCRIPTIONS = {
-  1: 'SPY 10/20 EMA crossover signals',
-  2: 'Market breadth — % stocks above moving avg',
-  3: 'Cumulative net new highs vs new lows',
-  4: 'SPY price vs 20/50 EMA structure',
-  5: 'SPY 10/20 EMA + CNHNL breadth confirmation',
-  6: 'SPY 10/20 EMA + VIX EMA early warning',
-  7: 'Wyckoff 4-regime — Structure x Breadth + VIX modifier',
-  8: 'GHP Regime Overlay — 8-criterion weekly scorecard (Price Structure + Breadth + Volatility)',
-};
+// --- Regime Color Registry (GHP Overlay — 3-color palette) ---
+const REGIME_COLOR_CONFIG = [
+  { key: 'Green',  cls: 'green-card',  panelCls: 'panel-green',  hex: '#22c55e', dotCss: 'var(--green)',          bandRgba: 'rgba(34,197,94,0.18)',  label: 'Green' },
+  { key: 'Yellow', cls: 'yellow-card', panelCls: 'panel-yellow', hex: '#eab308', dotCss: 'var(--wyckoff-yellow)', bandRgba: 'rgba(234,179,8,0.18)',  label: 'Yellow' },
+  { key: 'Red',    cls: 'red-card',    panelCls: 'panel-red',    hex: '#ef4444', dotCss: 'var(--red)',            bandRgba: 'rgba(239,68,68,0.18)',  label: 'Red' },
+];
 
-// --- Regime Color Registry ---
-const REGIME_COLOR_REGISTRY = {
-  default: [
-    { key: 'Green',        cls: 'green-card',        panelCls: 'panel-green',        hex: '#22c55e', dotCss: 'var(--green)',        bandRgba: 'rgba(34,197,94,0.18)',  label: 'Green' },
-    { key: 'Yellow-Green', cls: 'yellow-green-card',  panelCls: 'panel-yellow-green',  hex: '#f59e0b', dotCss: 'var(--yellow-green)', bandRgba: 'rgba(245,158,11,0.18)', label: 'Y-Green' },
-    { key: 'Yellow-Red',   cls: 'yellow-red-card',    panelCls: 'panel-yellow-red',    hex: '#06b6d4', dotCss: 'var(--yellow-red)',   bandRgba: 'rgba(6,182,212,0.18)',  label: 'Y-Red' },
-    { key: 'Red',          cls: 'red-card',           panelCls: 'panel-red',           hex: '#ef4444', dotCss: 'var(--red)',          bandRgba: 'rgba(239,68,68,0.18)',  label: 'Red' },
-  ],
-  regime7: [
-    { key: 'Green',  cls: 'green-card',  panelCls: 'panel-green',  hex: '#22c55e', dotCss: 'var(--green)',          bandRgba: 'rgba(34,197,94,0.18)',  label: 'Green' },
-    { key: 'Yellow', cls: 'yellow-card', panelCls: 'panel-yellow', hex: '#eab308', dotCss: 'var(--wyckoff-yellow)', bandRgba: 'rgba(234,179,8,0.18)',  label: 'Yellow' },
-    { key: 'Blue',   cls: 'blue-card',   panelCls: 'panel-blue',   hex: '#3b82f6', dotCss: 'var(--wyckoff-blue)',   bandRgba: 'rgba(59,130,246,0.18)', label: 'Blue' },
-    { key: 'Red',    cls: 'red-card',    panelCls: 'panel-red',    hex: '#ef4444', dotCss: 'var(--red)',            bandRgba: 'rgba(239,68,68,0.18)',  label: 'Red' },
-  ],
-  regime8: [
-    { key: 'Green',  cls: 'green-card',  panelCls: 'panel-green',  hex: '#22c55e', dotCss: 'var(--green)',          bandRgba: 'rgba(34,197,94,0.18)',  label: 'Green' },
-    { key: 'Yellow', cls: 'yellow-card', panelCls: 'panel-yellow', hex: '#eab308', dotCss: 'var(--wyckoff-yellow)', bandRgba: 'rgba(234,179,8,0.18)',  label: 'Yellow' },
-    { key: 'Red',    cls: 'red-card',    panelCls: 'panel-red',    hex: '#ef4444', dotCss: 'var(--red)',            bandRgba: 'rgba(239,68,68,0.18)',  label: 'Red' },
-  ],
-};
-
-// All possible color keys across all regimes (superset for chart band series)
-const ALL_BAND_COLORS = ['Green', 'Yellow-Green', 'Yellow-Red', 'Yellow', 'Blue', 'Red'];
+const ALL_BAND_COLORS = ['Green', 'Yellow', 'Red'];
 const ALL_BAND_CONFIG = {};
-for (const regKey of Object.keys(REGIME_COLOR_REGISTRY)) {
-  for (const c of REGIME_COLOR_REGISTRY[regKey]) {
-    ALL_BAND_CONFIG[c.key] = { top: c.bandRgba, bottom: c.bandRgba };
-  }
+for (const c of REGIME_COLOR_CONFIG) {
+  ALL_BAND_CONFIG[c.key] = { top: c.bandRgba, bottom: c.bandRgba };
 }
 
 function getRegimeColorConfig() {
-  return REGIME_COLOR_REGISTRY['regime' + currentRegime] || REGIME_COLOR_REGISTRY.default;
+  return REGIME_COLOR_CONFIG;
 }
 function getRegimeColorKeys() {
-  return getRegimeColorConfig().map(c => c.key);
+  return REGIME_COLOR_CONFIG.map(c => c.key);
 }
 function getColorEntry(colorKey) {
-  const cfg = getRegimeColorConfig();
-  return cfg.find(c => c.key === colorKey) || { key: colorKey, cls: 'unknown-card', panelCls: '', hex: '#6b7280', dotCss: 'var(--unknown)', bandRgba: 'rgba(107,114,128,0.18)', label: colorKey };
+  return REGIME_COLOR_CONFIG.find(c => c.key === colorKey) || { key: colorKey, cls: 'unknown-card', panelCls: '', hex: '#6b7280', dotCss: 'var(--unknown)', bandRgba: 'rgba(107,114,128,0.18)', label: colorKey };
 }
 
 // --- Helpers ---
@@ -421,7 +391,6 @@ function init() {
   selectedStrategies = new Set([...STRATEGY_VALUES, '(Untagged)']);
   selectedTradeTypes = new Set([...TRADE_TYPE_VALUES, '(Untagged)']);
   setupViewTabs();
-  setupRegimeButtons();
   setupColorFilter();
   setupIndicatorToggles();
   setupEquityToggles();
@@ -458,45 +427,6 @@ function switchView(view) {
       if (drawdownChart) drawdownChart.applyOptions({ width: document.getElementById('drawdown-chart').clientWidth });
     }, 20);
   }
-}
-
-// --- Regime Management ---
-function setupRegimeButtons() {
-  document.querySelectorAll('.regime-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const regime = parseInt(btn.dataset.regime);
-      if (regime === currentRegime) return;
-
-      document.querySelectorAll('.regime-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-
-      // Crossfade transition
-      const content = document.querySelector('.content');
-      content.classList.add('transitioning');
-
-      setTimeout(() => {
-        currentRegime = regime;
-        currentPage = 1;
-        selectedTradeIdx = null;
-        closeTradeDetail();
-        updateRegimeDesc(regime);
-        // Rebuild color-dependent state for new regime
-        selectedColors = new Set([...getRegimeColorKeys(), 'Unknown']);
-        selectedExitColors = new Set([...getRegimeColorKeys(), 'Unknown']);
-        currentColorFilter = 'all';
-        setupEquityToggles();
-        setupTradeRegimeToggles();
-        setupColorFilter();
-        rebuildColorMultiSelects();
-        render();
-        content.classList.remove('transitioning');
-      }, 150);
-    });
-  });
-}
-
-function updateRegimeDesc(regime) {
-  document.getElementById('regime-desc').textContent = REGIME_DESCRIPTIONS[regime] || '';
 }
 
 // --- Color Filter (Performers) ---
