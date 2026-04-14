@@ -892,7 +892,7 @@ function buildEquityCurve(trades) {
 
 function computeRegimeStats(trades) {
   const n = trades.length;
-  if (n === 0) return { '# Trades': 0, 'Total P&L': 0, 'Win Rate': 0, 'Avg P&L': 0, 'Edge Ratio': 0, 'Avg Holding Period': 0, 'Max Win': 0, 'Max Loss': 0 };
+  if (n === 0) return { '# Trades': 0, 'Total P&L': 0, 'Win Rate': 0, 'Avg P&L': 0, 'Edge Ratio': 0, 'Avg Holding Period': 0, 'Max Win': 0, 'Max Loss': 0, 'Expectancy': null, 'R Sample': 0, 'Avg Win R': 0, 'Avg Loss R': 0, 'R Win Rate': 0 };
   const pnls = trades.map(t => t.pnl);
   const totalPnL = pnls.reduce((s, p) => s + p, 0);
   const winners = trades.filter(t => t.pnl > 0);
@@ -914,6 +914,17 @@ function computeRegimeStats(trades) {
   const avgHold = holdDays.length ? holdDays.reduce((s, d) => s + d, 0) / holdDays.length : 0;
   const avgWinHold = winHoldDays.length ? winHoldDays.reduce((s, d) => s + d, 0) / winHoldDays.length : 0;
   const avgLossHold = lossHoldDays.length ? lossHoldDays.reduce((s, d) => s + d, 0) / lossHoldDays.length : 0;
+
+  // Van Tharp expectancy (R-multiple based) over the R-enriched subset
+  const rTrades = trades.filter(t => t.rMultiple != null);
+  const rN = rTrades.length;
+  const rWinners = rTrades.filter(t => t.rMultiple > 0);
+  const rLosers = rTrades.filter(t => t.rMultiple <= 0);
+  const avgWinR = rWinners.length ? rWinners.reduce((s, t) => s + t.rMultiple, 0) / rWinners.length : 0;
+  const avgLossR = rLosers.length ? rLosers.reduce((s, t) => s + t.rMultiple, 0) / rLosers.length : 0;
+  const expectancy = rN ? rTrades.reduce((s, t) => s + t.rMultiple, 0) / rN : null;
+  const rWinRate = rN ? rWinners.length / rN : 0;
+
   return {
     '# Trades': n, 'Total P&L': totalPnL, 'Win Rate': n ? winners.length / n : 0,
     'Avg P&L': n ? totalPnL / n : 0, 'Edge Ratio': edgeRatio,
@@ -921,6 +932,11 @@ function computeRegimeStats(trades) {
     'Avg Win Hold': Math.round(avgWinHold * 10) / 10,
     'Avg Loss Hold': Math.round(avgLossHold * 10) / 10,
     'Max Win': Math.max(...pnls), 'Max Loss': Math.min(...pnls),
+    'Expectancy': expectancy,
+    'R Sample': rN,
+    'Avg Win R': avgWinR,
+    'Avg Loss R': avgLossR,
+    'R Win Rate': rWinRate,
   };
 }
 
@@ -1001,6 +1017,21 @@ function renderStatBar() {
   const avgLoss = losers.length ? Math.abs(losers.reduce((s, t) => s + t.pnl, 0) / losers.length) : 0;
   const edgeRatio = avgLoss > 0 ? avgWin / avgLoss : 0;
 
+  const rTrades = trades.filter(t => t.rMultiple != null);
+  const rN = rTrades.length;
+  const rWinners = rTrades.filter(t => t.rMultiple > 0);
+  const rLosers = rTrades.filter(t => t.rMultiple <= 0);
+  const avgWinR = rWinners.length ? rWinners.reduce((s, t) => s + t.rMultiple, 0) / rWinners.length : 0;
+  const avgLossR = rLosers.length ? rLosers.reduce((s, t) => s + t.rMultiple, 0) / rLosers.length : 0;
+  const expectancy = rN ? rTrades.reduce((s, t) => s + t.rMultiple, 0) / rN : null;
+  const expectancyCls = expectancy == null ? '' : (expectancy >= 0 ? 'positive' : 'negative');
+  const expectancyDisplay = expectancy == null
+    ? '\u2014'
+    : `${expectancy >= 0 ? '+' : ''}${expectancy.toFixed(2)}R`;
+  const expectancySub = rN
+    ? `n=${rN} \u00B7 W: ${avgWinR >= 0 ? '+' : ''}${avgWinR.toFixed(2)} / L: ${avgLossR.toFixed(2)}`
+    : 'no R data';
+
   document.getElementById('stat-bar').innerHTML = `
     <div class="stat-bar-item">
       <div class="stat-bar-label">Total P&L</div>
@@ -1016,6 +1047,11 @@ function renderStatBar() {
       <div class="stat-bar-label">Edge Ratio</div>
       <div class="stat-bar-value">${edgeRatio.toFixed(2)}</div>
       <div class="stat-bar-sub">Avg W: ${fmtPnL(Math.round(avgWin))} / L: ${fmtPnL(Math.round(-avgLoss))}</div>
+    </div>
+    <div class="stat-bar-item">
+      <div class="stat-bar-label">Expectancy</div>
+      <div class="stat-bar-value ${expectancyCls}">${expectancyDisplay}</div>
+      <div class="stat-bar-sub">${expectancySub}</div>
     </div>
     <div class="stat-bar-item">
       <div class="stat-bar-label">Avg P&L</div>
@@ -1041,6 +1077,11 @@ function renderRegimeColorCards() {
     const avgHold = s['Avg Holding Period'];
     const avgWinHold = s['Avg Win Hold'];
     const avgLossHold = s['Avg Loss Hold'];
+    const expectancy = s['Expectancy'];
+    const rSample = s['R Sample'];
+    const avgWinR = s['Avg Win R'];
+    const avgLossR = s['Avg Loss R'];
+    const rWinRate = s['R Win Rate'];
     const ttStats = computeTradeTypeStats(colorTrades);
     const ttHtml = TRADE_TYPE_VALUES.map(tt => {
       const ts = ttStats[tt];
@@ -1072,6 +1113,22 @@ function renderRegimeColorCards() {
           <div class="mini-stat"><div class="mini-label">Avg Loss Hold</div><div class="mini-value">${avgLossHold ? avgLossHold.toFixed(1) + 'd' : '\u2014'}</div></div>
           <div class="mini-stat"><div class="mini-label">Best</div><div class="mini-value positive">${fmtPnL(s['Max Win'] || 0)}</div></div>
           <div class="mini-stat"><div class="mini-label">Worst</div><div class="mini-value negative">${fmtPnL(s['Max Loss'] || 0)}</div></div>
+          <div class="mini-stat" title="Van Tharp expectancy = average R-multiple across trades with recorded risk. n=${rSample}">
+            <div class="mini-label">Expectancy</div>
+            <div class="mini-value ${expectancy == null ? '' : (expectancy >= 0 ? 'positive' : 'negative')}">${expectancy == null ? '\u2014' : (expectancy >= 0 ? '+' : '') + expectancy.toFixed(2) + 'R'}</div>
+          </div>
+          <div class="mini-stat" title="Win rate on the R-enriched subset (n=${rSample})">
+            <div class="mini-label">R Win %</div>
+            <div class="mini-value">${rSample ? (rWinRate * 100).toFixed(0) + '%' : '\u2014'}</div>
+          </div>
+          <div class="mini-stat" title="Average winning R">
+            <div class="mini-label">Avg Win R</div>
+            <div class="mini-value ${rSample && avgWinR > 0 ? 'positive' : ''}">${rSample ? (avgWinR >= 0 ? '+' : '') + avgWinR.toFixed(2) + 'R' : '\u2014'}</div>
+          </div>
+          <div class="mini-stat" title="Average losing R">
+            <div class="mini-label">Avg Loss R</div>
+            <div class="mini-value ${rSample && avgLossR < 0 ? 'negative' : ''}">${rSample ? avgLossR.toFixed(2) + 'R' : '\u2014'}</div>
+          </div>
         </div>
         ${ttHtml ? `<span class="tt-toggle-link" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'':'none';this.textContent=this.nextElementSibling.style.display==='none'?'Show trade types \u25B6':'Hide trade types \u25BC'">Show trade types \u25B6</span>
         <div class="tt-breakdown" style="display:none;"><div class="tt-breakdown-label">By Trade Type</div>
@@ -1386,6 +1443,10 @@ function showTradeDetail(tradeId, sourceNavList) {
     <span class="trade-meta-item ${trade.pnl >= 0 ? 'positive' : 'negative'}">P&L: ${fmtPnL(trade.pnl)}</span>
     ${pctChange !== null ? `<span class="trade-meta-item">${pctChange >= 0 ? '+' : ''}${pctChange.toFixed(2)}%</span>` : ''}
     <span class="trade-meta-item">Fees: $${Math.abs(trade.fees).toFixed(2)}</span>
+    ${trade.plannedEntry != null ? `<span class="trade-meta-item">Sized: $${trade.plannedEntry.toFixed(2)}</span>` : ''}
+    ${trade.plannedCut != null ? `<span class="trade-meta-item">Plan Cut: $${trade.plannedCut.toFixed(2)}</span>` : ''}
+    ${trade.riskDollars != null ? `<span class="trade-meta-item">Risk: $${fmt(trade.riskDollars)}</span>` : ''}
+    ${trade.rMultiple != null ? `<span class="trade-meta-item ${trade.rMultiple >= 0 ? 'positive' : 'negative'}">R: ${trade.rMultiple >= 0 ? '+' : ''}${trade.rMultiple.toFixed(2)}</span>` : ''}
   `;
 
   // Render chart after panel is visible
@@ -1643,7 +1704,7 @@ function renderTable() {
   const pageItems = filtered.slice(start, start + PAGE_SIZE);
 
   if (filtered.length === 0) {
-    document.getElementById('trades-tbody').innerHTML = `<tr><td colspan="14" style="padding:32px;text-align:center;color:var(--text-dim);font-size:13px;">No trades match your filters</td></tr>`;
+    document.getElementById('trades-tbody').innerHTML = `<tr><td colspan="15" style="padding:32px;text-align:center;color:var(--text-dim);font-size:13px;">No trades match your filters</td></tr>`;
     document.getElementById('pagination').innerHTML = '';
     return;
   }
@@ -1667,6 +1728,7 @@ function renderTable() {
       <td>$${t.entry.toFixed(2)}</td>
       <td>$${t.exit.toFixed(2)}</td>
       <td class="${t.pnl >= 0 ? 'positive' : 'negative'}" style="font-weight:600;">${fmtPnL(t.pnl)}</td>
+      <td class="${t.rMultiple != null && t.rMultiple >= 0 ? 'positive' : (t.rMultiple != null ? 'negative' : '')}" style="font-weight:600;">${t.rMultiple != null ? (t.rMultiple >= 0 ? '+' : '') + t.rMultiple.toFixed(2) : ''}</td>
       <td style="color:var(--text-dim);">$${Math.abs(t.fees).toFixed(2)}</td>
       <td><span class="regime-badge badge-${t.regimeColor}">${t.regimeColor}</span></td>
       <td><span class="regime-badge badge-${t.exitRegimeColor}">${t.exitRegimeColor}</span></td>

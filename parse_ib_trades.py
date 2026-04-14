@@ -510,6 +510,248 @@ def apply_tms_tags(regime_trades, tms_lookup):
         print(f'  TMS tag matching: {matched // n_regimes}/{total // n_regimes} trades matched '
               f'({matched // n_regimes / (total // n_regimes) * 100:.1f}%)')
 
+# ── Mothersheet Orders (planned entry / cut / risk) ──────────────────────────
+
+def _fnum(s):
+    """Parse a number cell that may contain commas or a trailing %."""
+    if s is None:
+        return None
+    s = str(s).replace(',', '').strip().rstrip('%')
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+MOTHERSHEET_FORWARD_DAYS = 10   # sheet DateAdded → dashboard entry (watchlist delay)
+MOTHERSHEET_BACKWARD_DAYS = 2   # tolerance for backdated sheet entries
+
+def load_mothersheet_orders(script_dir):
+    """Load planned entry / cut / risk data from Golden Hotpot Mothersheet yearly Orders CSVs.
+
+    Column mapping (verified against sizing math on filled rows):
+      VAR         → $ risk per trade
+      Entry Limit → planned entry price (what we sized against)
+      Sizing      → full stop-loss price (Shares ≈ VAR / |EntryStop - Sizing|)
+      Cut         → planned discretionary cut / trailing exit
+      Return      → self-recorded R-multiple
+      'Date'/untitled col after '7 day % change' → fill date (2024 is untitled)
+
+    Returns a dict  symbol → sorted list of aggregated rows, where each row has
+    an `anchorDate` (fillDate if present, else dateAdded) and the merged payload.
+    Rows sharing the same (symbol, anchorDate) are merged: sum VAR/Shares,
+    share-weighted mean of prices and recordedR. Matching-to-trades with a
+    date window is done in apply_mothersheet_orders().
+    """
+    from datetime import datetime
+    files = [
+        'Golden Hotpot Mothersheet 2024 - Orders.csv',
+        'Golden Hotpot Mothersheet 2025 - Orders.csv',
+        'Golden Hotpot Mothersheet 2026 - Orders.csv',
+    ]
+    raw_rows = []
+    total_filled_seen = 0
+    for fname in files:
+        path = os.path.join(script_dir, fname)
+        if not os.path.exists(path):
+            print(f'  WARNING: {fname} not found, skipping')
+            continue
+        with open(path, 'r', encoding='utf-8-sig') as f:
+            all_rows = list(csv.reader(f))
+
+        header_idx = None
+        for i, row in enumerate(all_rows):
+            cells = [c.strip() for c in row]
+            if 'Stock' in cells and 'VAR' in cells and 'Order Filled' in cells:
+                header_idx = i
+                break
+        if header_idx is None:
+            print(f'  WARNING: {fname}: no header row found, skipping')
+            continue
+
+        header = [c.strip() for c in all_rows[header_idx]]
+        col = {name: header.index(name) for name in (
+            'Stock', 'Date Added', 'VAR', 'Entry Stop', 'Entry Limit',
+            'Sizing', 'Cut', 'Shares', 'Order Filled', 'Cancel Order', 'Return',
+        ) if name in header}
+        if 'Date' in header:
+            col['FillDate'] = header.index('Date')
+        elif '7 day % change' in header:
+            col['FillDate'] = header.index('7 day % change') + 1
+
+        def _iso(raw):
+            raw = (raw or '').strip()
+            if not raw:
+                return None
+            try:
+                return datetime.strptime(raw, '%m/%d/%Y').strftime('%Y-%m-%d')
+            except ValueError:
+                return None
+
+        file_filled = 0
+        for row in all_rows[header_idx + 1:]:
+            def get(name):
+                idx = col.get(name)
+                if idx is None or idx >= len(row):
+                    return ''
+                return row[idx].strip()
+
+            if get('Order Filled').upper() != 'TRUE':
+                continue
+            if get('Cancel Order').upper() == 'TRUE':
+                continue
+            stock = get('Stock').upper()
+            if not stock:
+                continue
+
+            date_added = _iso(get('Date Added'))
+            fill_date = _iso(get('FillDate'))
+            anchor = fill_date or date_added
+            if anchor is None:
+                continue
+
+            file_filled += 1
+            raw_rows.append({
+                'symbol': stock,
+                'anchorDate': anchor,
+                'dateAdded': date_added,
+                'fillDate': fill_date,
+                'plannedEntry': _fnum(get('Entry Limit')) or _fnum(get('Entry Stop')),
+                'plannedStop': _fnum(get('Sizing')),
+                'plannedCut': _fnum(get('Cut')),
+                'riskDollars': _fnum(get('VAR')),
+                'plannedShares': _fnum(get('Shares')),
+                'recordedR': _fnum(get('Return')),
+            })
+        total_filled_seen += file_filled
+        print(f'  {fname}: {file_filled} filled rows')
+
+    # Merge rows that share the exact same (symbol, anchorDate).
+    groups = defaultdict(list)
+    for r in raw_rows:
+        groups[(r['symbol'], r['anchorDate'])].append(r)
+
+    by_symbol = defaultdict(list)
+    for (symbol, anchor), rows in groups.items():
+        def _wavg(field):
+            weighted = [(r[field], r['plannedShares'] or 1) for r in rows if r[field] is not None]
+            if not weighted:
+                return None
+            num = sum(v * w for v, w in weighted)
+            den = sum(w for _, w in weighted)
+            return round(num / den, 4) if den else None
+
+        risk_vals = [r['riskDollars'] for r in rows if r['riskDollars'] is not None]
+        share_vals = [r['plannedShares'] for r in rows if r['plannedShares'] is not None]
+        by_symbol[symbol].append({
+            'anchorDate': anchor,
+            'fillDate': rows[0]['fillDate'],
+            'dateAdded': rows[0]['dateAdded'],
+            'plannedEntry': _wavg('plannedEntry'),
+            'plannedStop': _wavg('plannedStop'),
+            'plannedCut': _wavg('plannedCut'),
+            'riskDollars': round(sum(risk_vals), 2) if risk_vals else None,
+            'plannedShares': round(sum(share_vals), 2) if share_vals else None,
+            'recordedR': _wavg('recordedR'),
+            'rowCount': len(rows),
+        })
+
+    total_sheet_rows = 0
+    for symbol in by_symbol:
+        by_symbol[symbol].sort(key=lambda r: r['anchorDate'])
+        total_sheet_rows += len(by_symbol[symbol])
+
+    print(f'  Mothersheet orders: {total_filled_seen} filled rows -> '
+          f'{total_sheet_rows} aggregated entries across {len(by_symbol)} symbols')
+    return dict(by_symbol)
+
+
+def apply_mothersheet_orders(regime_trades, by_symbol):
+    """Attach planned entry/cut/risk and compute rMultiple on each stock trade.
+
+    Matching rule (per dashboard stock trade, greedy by entry date):
+      - look at same-symbol sheet rows not yet consumed
+      - accept offset (dashboard_entry - sheet_anchor) in [-BACK, +FORWARD] days
+      - prefer smallest non-negative offset (watchlist-then-entered is the dominant case)
+      - then smallest |offset|
+      - consume the chosen row so it can't match a second trade
+    Options trades and un-matched stock trades get null fields so the JSON
+    schema is uniform for the UI.
+    """
+    from datetime import datetime
+    if not regime_trades:
+        return
+
+    first_regime = next(iter(regime_trades))
+    canonical = sorted(regime_trades[first_regime], key=lambda t: t['entryDate'])
+    stock_total = sum(1 for t in canonical if t['type'] == 'Stocks')
+
+    consumed_ids = set()
+    enrichment_by_tradeid = {}
+    total_sheet_rows = sum(len(rows) for rows in by_symbol.values())
+    consumed_count = 0
+
+    for t in canonical:
+        if t['type'] != 'Stocks':
+            continue
+        underlying = t['symbol'].split(' ')[0].upper()
+        rows = by_symbol.get(underlying)
+        if not rows:
+            continue
+        try:
+            edate = datetime.strptime(t['entryDate'], '%Y-%m-%d')
+        except ValueError:
+            continue
+
+        best = None
+        best_key = None
+        for row in rows:
+            if id(row) in consumed_ids:
+                continue
+            rdate = datetime.strptime(row['anchorDate'], '%Y-%m-%d')
+            offset = (edate - rdate).days
+            if offset < -MOTHERSHEET_BACKWARD_DAYS or offset > MOTHERSHEET_FORWARD_DAYS:
+                continue
+            sort_key = (0 if offset >= 0 else 1, abs(offset))
+            if best is None or sort_key < best_key:
+                best = row
+                best_key = sort_key
+        if best is None:
+            continue
+        consumed_ids.add(id(best))
+        consumed_count += 1
+        enrichment_by_tradeid[t['tradeId']] = best
+
+    for trades in regime_trades.values():
+        for t in trades:
+            t['plannedEntry'] = None
+            t['plannedStop'] = None
+            t['plannedCut'] = None
+            t['riskDollars'] = None
+            t['plannedShares'] = None
+            t['recordedR'] = None
+            t['rMultiple'] = None
+            data = enrichment_by_tradeid.get(t['tradeId'])
+            if not data:
+                continue
+            t['plannedEntry'] = data['plannedEntry']
+            t['plannedStop'] = data['plannedStop']
+            t['plannedCut'] = data['plannedCut']
+            t['riskDollars'] = data['riskDollars']
+            t['plannedShares'] = data['plannedShares']
+            t['recordedR'] = data['recordedR']
+            if data['riskDollars']:
+                t['rMultiple'] = round(t['pnl'] / data['riskDollars'], 3)
+
+    pct = (consumed_count / stock_total * 100) if stock_total else 0
+    print(f'  Mothersheet matching: {consumed_count}/{stock_total} stock trades enriched '
+          f'({pct:.1f}%; window [-{MOTHERSHEET_BACKWARD_DAYS}d, +{MOTHERSHEET_FORWARD_DAYS}d])')
+    leftover = total_sheet_rows - consumed_count
+    if leftover > 0:
+        print(f'  Filled orders with no dashboard trade: {leftover} '
+              f'(likely scalps/side trades not in fund)')
+
 # ── Equity Curve ──────────────────────────────────────────────────────────────
 
 def build_equity_curve(trades):
@@ -759,6 +1001,11 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     tms_lookup = load_tms_tags(script_dir)
     apply_tms_tags(regime_trades, tms_lookup)
+
+    # 4c. Apply Mothersheet planned entry/cut/risk → R-multiple
+    print('\nLoading Mothersheet orders...')
+    orders_lookup = load_mothersheet_orders(script_dir)
+    apply_mothersheet_orders(regime_trades, orders_lookup)
 
     # 5. Build equity curve
     equity_curve = build_equity_curve(closed)
