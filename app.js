@@ -164,19 +164,34 @@ function computeStrategyExpectancy(trades, regimeColor) {
   STRATEGY_VALUES.forEach(s => { stratMap[s] = []; });
   filtered.forEach(t => {
     if (t.primaryStrategy && stratMap[t.primaryStrategy] !== undefined)
-      stratMap[t.primaryStrategy].push(t.pnl);
+      stratMap[t.primaryStrategy].push(t);
   });
   const results = STRATEGY_VALUES.map(s => {
-    const pnls = stratMap[s];
-    const n = pnls.length;
-    const totalPnL = pnls.reduce((a, b) => a + b, 0);
-    return { strategy: s, count: n, expectancy: n > 0 ? totalPnL / n : 0, totalPnL, lowSample: n > 0 && n < 30 };
+    const bucket = stratMap[s];
+    const n = bucket.length;
+    const totalPnL = bucket.reduce((a, t) => a + t.pnl, 0);
+    const rBucket = bucket.filter(t => t.rMultiple != null);
+    const rCount = rBucket.length;
+    const rExpectancy = rCount > 0 ? rBucket.reduce((a, t) => a + t.rMultiple, 0) / rCount : 0;
+    return {
+      strategy: s,
+      count: n,
+      expectancy: n > 0 ? totalPnL / n : 0,
+      totalPnL,
+      rCount,
+      rExpectancy,
+      lowSample: n > 0 && n < 30,
+    };
   });
-  const valFn = pnlDisplayMode === 'total' ? d => d.totalPnL : d => d.expectancy;
+  const valFn = pnlDisplayMode === 'total' ? d => d.totalPnL
+              : pnlDisplayMode === 'rexp'  ? d => d.rExpectancy
+              : d => d.expectancy;
   results.sort((a, b) => {
-    if (a.count === 0 && b.count !== 0) return -1;
-    if (a.count !== 0 && b.count === 0) return 1;
-    if (a.count === 0 && b.count === 0) return a.strategy.localeCompare(b.strategy);
+    const aEmpty = pnlDisplayMode === 'rexp' ? a.rCount === 0 : a.count === 0;
+    const bEmpty = pnlDisplayMode === 'rexp' ? b.rCount === 0 : b.count === 0;
+    if (aEmpty && !bEmpty) return -1;
+    if (!aEmpty && bEmpty) return 1;
+    if (aEmpty && bEmpty) return a.strategy.localeCompare(b.strategy);
     return valFn(b) - valFn(a);
   });
   return results;
@@ -186,50 +201,56 @@ function computeStrategyExpectancy(trades, regimeColor) {
 let heatmapSortCol = 'Total';
 let heatmapSortDir = -1;
 
+function _bucketStats(subset) {
+  const n = subset.length;
+  const totalPnL = subset.reduce((sum, t) => sum + t.pnl, 0);
+  const wins = subset.filter(t => t.pnl > 0);
+  const losses = subset.filter(t => t.pnl <= 0);
+  const avgWin = wins.length ? wins.reduce((sum, t) => sum + t.pnl, 0) / wins.length : 0;
+  const avgLoss = losses.length ? Math.abs(losses.reduce((sum, t) => sum + t.pnl, 0) / losses.length) : 0;
+  const rBucket = subset.filter(t => t.rMultiple != null);
+  const rCount = rBucket.length;
+  const rExpectancy = rCount ? rBucket.reduce((s, t) => s + t.rMultiple, 0) / rCount : 0;
+  return {
+    count: n,
+    totalPnL,
+    avgPnL: n > 0 ? totalPnL / n : 0,
+    winRate: n > 0 ? wins.length / n : 0,
+    edgeRatio: avgLoss > 0 ? avgWin / avgLoss : 0,
+    rCount,
+    rExpectancy,
+  };
+}
+
 function computeHeatmapData(trades) {
   const colors = getRegimeColorKeys();
   const matrix = {};
   STRATEGY_VALUES.forEach(s => {
     matrix[s] = {};
     colors.forEach(c => {
-      const subset = trades.filter(t => t.primaryStrategy === s && t.regimeColor === c);
-      const n = subset.length;
-      if (n === 0) { matrix[s][c] = { count: 0, totalPnL: 0, avgPnL: 0, winRate: 0, edgeRatio: 0 }; return; }
-      const totalPnL = subset.reduce((sum, t) => sum + t.pnl, 0);
-      const wins = subset.filter(t => t.pnl > 0);
-      const losses = subset.filter(t => t.pnl <= 0);
-      const avgWin = wins.length ? wins.reduce((sum, t) => sum + t.pnl, 0) / wins.length : 0;
-      const avgLoss = losses.length ? Math.abs(losses.reduce((sum, t) => sum + t.pnl, 0) / losses.length) : 0;
-      matrix[s][c] = {
-        count: n, totalPnL, avgPnL: totalPnL / n,
-        winRate: wins.length / n, edgeRatio: avgLoss > 0 ? avgWin / avgLoss : 0
-      };
+      matrix[s][c] = _bucketStats(trades.filter(t => t.primaryStrategy === s && t.regimeColor === c));
     });
-    const all = trades.filter(t => t.primaryStrategy === s);
-    const n = all.length;
-    const totalPnL = all.reduce((sum, t) => sum + t.pnl, 0);
-    const wins = all.filter(t => t.pnl > 0);
-    const losses = all.filter(t => t.pnl <= 0);
-    const avgWin = wins.length ? wins.reduce((sum, t) => sum + t.pnl, 0) / wins.length : 0;
-    const avgLoss = losses.length ? Math.abs(losses.reduce((sum, t) => sum + t.pnl, 0) / losses.length) : 0;
-    matrix[s].Total = {
-      count: n, totalPnL, avgPnL: n > 0 ? totalPnL / n : 0,
-      winRate: n > 0 ? wins.length / n : 0, edgeRatio: avgLoss > 0 ? avgWin / avgLoss : 0
-    };
+    matrix[s].Total = _bucketStats(trades.filter(t => t.primaryStrategy === s));
   });
   return matrix;
 }
 
 function heatmapCellColor(val, count, mode) {
   if (count === 0) return 'transparent';
-  const hi = mode === 'total' ? 10000 : 500;
-  const lo = mode === 'total' ? 2000 : 100;
+  let hi, lo;
+  if (mode === 'total')      { hi = 10000; lo = 2000; }
+  else if (mode === 'rexp')  { hi = 0.30;  lo = 0.10; }
+  else                       { hi = 500;   lo = 100; }
   if (val > hi) return 'rgba(48,209,88,0.35)';
   if (val > lo) return 'rgba(48,209,88,0.18)';
   if (val > 0) return 'rgba(48,209,88,0.08)';
   if (val > -lo) return 'rgba(255,69,58,0.08)';
   if (val > -hi) return 'rgba(255,69,58,0.18)';
   return 'rgba(255,69,58,0.35)';
+}
+
+function fmtRExp(val) {
+  return (val >= 0 ? '+' : '') + val.toFixed(2) + 'R';
 }
 
 function renderStrategyRegimeHeatmap() {
@@ -239,12 +260,18 @@ function renderStrategyRegimeHeatmap() {
   const colors = colorCfg.map(c => c.key);
 
   const isTotal = pnlDisplayMode === 'total';
-  const valKey = isTotal ? 'totalPnL' : 'avgPnL';
+  const isRexp = pnlDisplayMode === 'rexp';
+  const valKey = isRexp ? 'rExpectancy' : isTotal ? 'totalPnL' : 'avgPnL';
+  const countKey = isRexp ? 'rCount' : 'count';
 
   const sorted = [...STRATEGY_VALUES].sort((a, b) => {
-    const aVal = matrix[a][heatmapSortCol][valKey];
-    const bVal = matrix[b][heatmapSortCol][valKey];
-    return (bVal - aVal) * heatmapSortDir;
+    const aCell = matrix[a][heatmapSortCol];
+    const bCell = matrix[b][heatmapSortCol];
+    const aEmpty = aCell[countKey] === 0;
+    const bEmpty = bCell[countKey] === 0;
+    if (aEmpty && !bEmpty) return 1;
+    if (!aEmpty && bEmpty) return -1;
+    return (bCell[valKey] - aCell[valKey]) * heatmapSortDir;
   });
 
   const sortArrow = col => heatmapSortCol === col ? (heatmapSortDir === -1 ? ' \u25BC' : ' \u25B2') : '';
@@ -252,31 +279,43 @@ function renderStrategyRegimeHeatmap() {
     `<th class="heatmap-sort-header" data-sort-col="${c.key}" style="cursor:pointer;user-select:none;"><span class="color-dot" style="background:${c.dotCss};display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle;"></span>${c.key}${sortArrow(c.key)}</th>`
   ).join('') + `<th class="heatmap-sort-header" data-sort-col="Total" style="cursor:pointer;user-select:none;">Total${sortArrow('Total')}</th>`;
 
+  const renderCell = d => {
+    if (d[countKey] === 0) {
+      return isRexp && d.count > 0
+        ? `<td class="heatmap-cell no-data"><div class="heatmap-avg" style="color:var(--text-muted)">\u2014</div><div class="heatmap-meta">no R data</div></td>`
+        : `<td class="heatmap-cell no-data"><div class="heatmap-avg">\u2014</div></td>`;
+    }
+    const lowSample = d[countKey] < 5 ? ' low-sample' : '';
+    const displayVal = d[valKey];
+    const bg = heatmapCellColor(displayVal, d[countKey], pnlDisplayMode);
+    const valClass = displayVal >= 0 ? 'positive' : 'negative';
+    const valText = isRexp ? fmtRExp(displayVal) : fmtPnL(Math.round(displayVal));
+    const metaText = isRexp
+      ? `n=${d.rCount} \u00B7 ${Math.round(d.winRate * 100)}% WR`
+      : `n=${d.count} \u00B7 ${Math.round(d.winRate * 100)}% WR`;
+    return `<td class="heatmap-cell${lowSample}" style="background:${bg}">
+      <div class="heatmap-avg ${valClass}">${valText}</div>
+      <div class="heatmap-meta">${metaText}</div>
+    </td>`;
+  };
+
   const rows = sorted.map(s => {
-    const cells = colors.map(c => {
-      const d = matrix[s][c];
-      if (d.count === 0) {
-        return `<td class="heatmap-cell no-data"><div class="heatmap-avg">\u2014</div></td>`;
-      }
-      const lowSample = d.count < 5 ? ' low-sample' : '';
-      const displayVal = d[valKey];
-      const bg = heatmapCellColor(displayVal, d.count, pnlDisplayMode);
-      const valClass = displayVal >= 0 ? 'positive' : 'negative';
-      return `<td class="heatmap-cell${lowSample}" style="background:${bg}">
-        <div class="heatmap-avg ${valClass}">${fmtPnL(Math.round(displayVal))}</div>
-        <div class="heatmap-meta">n=${d.count} \u00B7 ${Math.round(d.winRate * 100)}% WR</div>
-      </td>`;
-    }).join('');
+    const cells = colors.map(c => renderCell(matrix[s][c])).join('');
 
     const t = matrix[s].Total;
+    const totalEmpty = t[countKey] === 0;
     const totalDisplayVal = t[valKey];
     const totalValClass = totalDisplayVal >= 0 ? 'positive' : 'negative';
-    const totalBg = heatmapCellColor(totalDisplayVal, t.count, pnlDisplayMode);
-    const totalMeta = isTotal ? `n=${t.count} \u00B7 ${Math.round(t.winRate * 100)}% WR` : `n=${t.count} \u00B7 $${fmt(Math.abs(t.totalPnL), 0)}`;
-    const totalCell = t.count === 0
-      ? `<td class="heatmap-total-cell"><div class="heatmap-avg" style="color:var(--text-muted)">\u2014</div></td>`
+    const totalBg = heatmapCellColor(totalDisplayVal, t[countKey], pnlDisplayMode);
+    const totalValText = isRexp ? fmtRExp(totalDisplayVal) : fmtPnL(Math.round(totalDisplayVal));
+    let totalMeta;
+    if (isRexp) totalMeta = `n=${t.rCount} \u00B7 ${Math.round(t.winRate * 100)}% WR`;
+    else if (isTotal) totalMeta = `n=${t.count} \u00B7 ${Math.round(t.winRate * 100)}% WR`;
+    else totalMeta = `n=${t.count} \u00B7 $${fmt(Math.abs(t.totalPnL), 0)}`;
+    const totalCell = totalEmpty
+      ? `<td class="heatmap-total-cell"><div class="heatmap-avg" style="color:var(--text-muted)">\u2014</div>${isRexp && t.count > 0 ? '<div class="heatmap-meta">no R data</div>' : ''}</td>`
       : `<td class="heatmap-total-cell" style="background:${totalBg}">
-          <div class="heatmap-avg ${totalValClass}">${fmtPnL(Math.round(totalDisplayVal))}</div>
+          <div class="heatmap-avg ${totalValClass}">${totalValText}</div>
           <div class="heatmap-meta">${totalMeta}</div>
         </td>`;
 
@@ -285,16 +324,18 @@ function renderStrategyRegimeHeatmap() {
 
   const avgActive = pnlDisplayMode === 'avg' ? ' active' : '';
   const totalActive = pnlDisplayMode === 'total' ? ' active' : '';
-  const modeLabel = isTotal ? 'Total P&L' : 'Avg P&L';
+  const rexpActive = pnlDisplayMode === 'rexp' ? ' active' : '';
+  const modeLabel = isRexp ? 'Expectancy (R)' : isTotal ? 'Total P&L' : 'Avg P&L';
 
   document.getElementById('heatmap-section').innerHTML = `
     <div style="display:flex;align-items:center;justify-content:flex-end;margin-bottom:10px;">
       <div class="indicator-toggles" style="margin-bottom:0;">
         <div class="indicator-toggle pnl-mode-toggle${avgActive}" data-pnl-mode="avg" style="color:#e5bb76;border-color:#e5bb76;background:rgba(229,187,118,0.12);">Avg P&L</div>
         <div class="indicator-toggle pnl-mode-toggle${totalActive}" data-pnl-mode="total" style="color:#e5bb76;border-color:#e5bb76;background:rgba(229,187,118,0.12);">Total P&L</div>
+        <div class="indicator-toggle pnl-mode-toggle${rexpActive}" data-pnl-mode="rexp" style="color:#e5bb76;border-color:#e5bb76;background:rgba(229,187,118,0.12);">Expectancy</div>
       </div>
     </div>
-    <div class="heatmap-subtitle">Showing ${modeLabel} \u00B7 Click column headers to sort \u00B7 Dimmed = &lt; 5 trades</div>
+    <div class="heatmap-subtitle">Showing ${modeLabel} \u00B7 Click column headers to sort \u00B7 Dimmed = &lt; 5 trades${isRexp ? ' \u00B7 Only trades with recorded risk counted' : ''}</div>
     <table class="heatmap-table">
       <thead><tr><th class="heatmap-strat-header">Strategy</th>${headerCells}</tr></thead>
       <tbody>${rows}</tbody>
@@ -1149,14 +1190,17 @@ function renderRegimeColorCards() {
 function renderStrategyPerformance() {
   const trades = getFilteredTrades();
   const regimes = getRegimeColorConfig().map(c => ({ color: c.key, cls: c.panelCls, dotColor: c.dotCss }));
+  const isRexp = pnlDisplayMode === 'rexp';
+  const useTotal = pnlDisplayMode === 'total';
   const panels = regimes.map(r => {
     const data = computeStrategyExpectancy(trades, r.color);
-    const withData = data.filter(d => d.count > 0);
-    const useTotal = pnlDisplayMode === 'total';
-    const getVal = d => useTotal ? d.totalPnL : d.expectancy;
+    const getVal = d => isRexp ? d.rExpectancy : useTotal ? d.totalPnL : d.expectancy;
+    const isEmpty = d => isRexp ? d.rCount === 0 : d.count === 0;
+    const getN = d => isRexp ? d.rCount : d.count;
+    const withData = data.filter(d => !isEmpty(d));
     const maxAbs = withData.length > 0 ? Math.max(...withData.map(d => Math.abs(getVal(d)))) : 1;
     const rows = data.map(d => {
-      if (d.count === 0) {
+      if (isEmpty(d)) {
         return `<div class="strategy-bar-row">
           <div class="strategy-bar-label">${strategyLabel(d.strategy)}\u2020</div>
           <div class="strategy-bar-container"></div>
@@ -1168,15 +1212,18 @@ function renderStrategyPerformance() {
       const pct = Math.min(100, (Math.abs(val) / maxAbs) * 100);
       const barCls = val >= 0 ? 'bar-positive' : 'bar-negative';
       const valCls = val >= 0 ? 'positive' : 'negative';
-      const dagger = d.lowSample ? '\u2020' : '';
-      const rowCls = d.lowSample ? ' low-sample' : '';
+      const n = getN(d);
+      const lowSample = n > 0 && n < 30;
+      const dagger = lowSample ? '\u2020' : '';
+      const rowCls = lowSample ? ' low-sample' : '';
+      const valText = isRexp ? fmtRExp(val) : fmtPnL(Math.round(val));
       return `<div class="strategy-bar-row${rowCls}">
         <div class="strategy-bar-label">${strategyLabel(d.strategy)}${dagger}</div>
         <div class="strategy-bar-container">
           <div class="strategy-bar ${barCls}" style="width:${pct}%"></div>
         </div>
-        <div class="strategy-bar-value ${valCls}">${fmtPnL(Math.round(val))}</div>
-        <div class="strategy-bar-n">n=${d.count}${d.lowSample ? '*' : ''}</div>
+        <div class="strategy-bar-value ${valCls}">${valText}</div>
+        <div class="strategy-bar-n">n=${n}${lowSample ? '*' : ''}</div>
       </div>`;
     }).join('');
     return `<div class="strategy-panel ${r.cls}">
@@ -1189,15 +1236,17 @@ function renderStrategyPerformance() {
   }).join('');
   const spAvgActive = pnlDisplayMode === 'avg' ? ' active' : '';
   const spTotalActive = pnlDisplayMode === 'total' ? ' active' : '';
-  const spModeLabel = pnlDisplayMode === 'total' ? 'Total P&L' : 'Avg P&L';
+  const spRexpActive = pnlDisplayMode === 'rexp' ? ' active' : '';
+  const spModeLabel = isRexp ? 'Expectancy (R)' : useTotal ? 'Total P&L' : 'Avg P&L';
   document.getElementById('strategy-perf-section').innerHTML = `
     <div style="display:flex;align-items:center;justify-content:flex-end;margin-bottom:10px;">
       <div class="indicator-toggles" style="margin-bottom:0;">
         <div class="indicator-toggle sp-pnl-toggle${spAvgActive}" data-pnl-mode="avg" style="color:#e5bb76;border-color:#e5bb76;background:rgba(229,187,118,0.12);">Avg P&L</div>
         <div class="indicator-toggle sp-pnl-toggle${spTotalActive}" data-pnl-mode="total" style="color:#e5bb76;border-color:#e5bb76;background:rgba(229,187,118,0.12);">Total P&L</div>
+        <div class="indicator-toggle sp-pnl-toggle${spRexpActive}" data-pnl-mode="rexp" style="color:#e5bb76;border-color:#e5bb76;background:rgba(229,187,118,0.12);">Expectancy</div>
       </div>
     </div>
-    <div class="strategy-perf-subtitle">Showing ${spModeLabel} \u00B7 \u2020 = thin cell (n &lt; 30), descriptive only &nbsp;&nbsp; * = small sample</div>
+    <div class="strategy-perf-subtitle">Showing ${spModeLabel} \u00B7 \u2020 = thin cell (n &lt; 30), descriptive only &nbsp;&nbsp; * = small sample${isRexp ? ' &nbsp;&nbsp; \u00B7 Only trades with recorded risk counted' : ''}</div>
     <div class="strategy-panels">${panels}</div>
   `;
 
