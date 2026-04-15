@@ -2525,24 +2525,91 @@ function replaySimulateTrade(trade, sizingPct, cutPct) {
   };
 }
 
-function _replayCacheKey(tradeId, sizingPct, cutPct) {
-  return tradeId + '|' + (sizingPct == null ? 'h' : sizingPct.toFixed(4)) + '|' + (cutPct == null ? 'h' : cutPct.toFixed(4));
+// Pure rescale: keep real entries, exits, holding period; only compute new
+// share count for the given sizing_pct and rescale realized P&L. Mirrors the
+// Python simulate_trade_rescale.
+function replaySimulateRescale(trade, sizingPct) {
+  if (trade.plannedEntry == null || trade.plannedStop == null
+      || trade.riskDollars == null || !trade.qty || trade.pnl == null) {
+    return { ok: false, reason: 'missing fields' };
+  }
+  const side = trade.side === 'Buy' ? 1 : -1;
+  const entry = +trade.plannedEntry;
+  const risk = +trade.riskDollars;
+  const deepDist = Math.abs(entry - +trade.plannedStop);
+  if (deepDist <= 0 || risk <= 0) return { ok: false, reason: 'bad distance' };
+  const sd = sizingPct * deepDist;
+  if (sd <= 0) return { ok: false, reason: 'bad sizing' };
+  const newShares = risk / sd;
+  const perSharePnl = (+trade.pnl) / (+trade.qty);
+  const newPnl = perSharePnl * newShares;
+
+  let holdingDays = 0;
+  try {
+    const d0 = new Date(trade.entryDate + 'T00:00:00Z').getTime();
+    const d1 = new Date(trade.exitDate + 'T00:00:00Z').getTime();
+    holdingDays = Math.max(0, Math.round((d1 - d0) / 86400000));
+  } catch (e) {}
+
+  return {
+    ok: true,
+    mode: 'rescale',
+    pnl: newPnl,
+    r: newPnl / risk,
+    holdingDays,
+    exitReason: 'real exit',
+    stopped: false,
+    tranchesFilled: 0,
+    shares: newShares,
+    entry,
+    cut: trade.plannedCut != null ? +trade.plannedCut : null,
+    t1: entry + side * sd,
+    t2: entry + side * 2 * sd,
+    fills: [],
+    side,
+    scale: 1.0,
+    lastBarDate: trade.exitDate,
+  };
 }
 
-function replayMemoSimulate(trade, sizingPct, cutPct) {
-  const k = _replayCacheKey(trade.tradeId, sizingPct, cutPct);
+function _runMode(run) {
+  if (!run || !run.params) return 'sim_1d';
+  return run.params.mode || (run.params.cut_pct != null ? 'sim_2d' : 'sim_1d');
+}
+
+function _replayCacheKey(tradeId, run) {
+  return tradeId + '|' + _runMode(run) + '|' + (run.params.sizing_pct || 0).toFixed(4)
+    + '|' + (run.params.cut_pct == null ? 'h' : run.params.cut_pct.toFixed(4));
+}
+
+function replayMemoSimulate(trade, run) {
+  if (!run) return { ok: false, reason: 'no scenario' };
+  const k = _replayCacheKey(trade.tradeId, run);
   if (replaySimCache.has(k)) return replaySimCache.get(k);
-  const res = replaySimulateTrade(trade, sizingPct, cutPct);
+  const mode = _runMode(run);
+  let res;
+  if (mode === 'rescale') {
+    res = replaySimulateRescale(trade, run.params.sizing_pct);
+  } else {
+    res = replaySimulateTrade(trade, run.params.sizing_pct, run.params.cut_pct);
+  }
   replaySimCache.set(k, res);
   return res;
 }
 
-function _findBest2DRun() {
+// Picks the variant run for the right side. Preference order:
+//   1. Whatever the user has selected in Sizing Lab (sizingActiveRunId)
+//   2. The run with the highest expectancy in the file
+//   3. null if no runs
+function _findReplayVariantRun() {
   const runs = (SIZING_RUNS && SIZING_RUNS.runs) || [];
+  if (runs.length === 0) return null;
+  if (sizingActiveRunId) {
+    const found = runs.find(r => r.id === sizingActiveRunId);
+    if (found) return found;
+  }
   let best = null;
   for (const r of runs) {
-    if (r.params.cut_pct == null) continue;
-    if (r.is_baseline) continue;
     if (best == null || r.aggregate.expectancy_R > best.aggregate.expectancy_R) best = r;
   }
   return best;
@@ -2590,7 +2657,19 @@ function setupTradeReplay() {
     if (e.key === 'ArrowRight') document.getElementById('replay-next').click();
   });
 
-  replayBestRun = _findBest2DRun();
+  // Scenario dropdown — wired once, refreshed each render.
+  const scenarioSel = document.getElementById('replay-scenario');
+  if (scenarioSel) {
+    scenarioSel.addEventListener('change', () => {
+      sizingActiveRunId = scenarioSel.value || null;
+      replayBestRun = _findReplayVariantRun();
+      replayApplyFilters();
+      replayIndex = 0;
+      renderTradeReplay();
+    });
+  }
+
+  replayBestRun = _findReplayVariantRun();
   replayApplyFilters();
 
   const badge = document.getElementById('replay-badge');
@@ -2598,6 +2677,33 @@ function setupTradeReplay() {
     badge.textContent = REPLAY_TRADES.length;
     badge.style.display = '';
   }
+}
+
+function _populateReplayScenarioDropdown() {
+  const sel = document.getElementById('replay-scenario');
+  if (!sel) return;
+  const runs = ((SIZING_RUNS && SIZING_RUNS.runs) || []).slice();
+  if (runs.length === 0) {
+    sel.innerHTML = '<option value="">(no scenarios)</option>';
+    return;
+  }
+  // Sort: best expectancy first, baseline pinned at top
+  runs.sort((a, b) => {
+    if (a.is_baseline && !b.is_baseline) return -1;
+    if (!a.is_baseline && b.is_baseline) return 1;
+    return (b.aggregate.expectancy_R || 0) - (a.aggregate.expectancy_R || 0);
+  });
+  const active = replayBestRun;
+  sel.innerHTML = runs.map(r => {
+    const mode = _runMode(r);
+    const modeShort = mode === 'rescale' ? 'rescale' : (mode === 'sim_2d' ? '2D' : '1D');
+    const sP = r.params.sizing_pct.toFixed(3);
+    const cP = r.params.cut_pct != null ? ` c=${r.params.cut_pct.toFixed(3)}` : '';
+    const exp = (r.aggregate.expectancy_R >= 0 ? '+' : '') + r.aggregate.expectancy_R.toFixed(2);
+    const tag = r.is_baseline ? ' [base]' : '';
+    const sel_attr = (active && r.id === active.id) ? ' selected' : '';
+    return `<option value="${r.id}"${sel_attr}>${modeShort}  s=${sP}${cP}  ${exp}R${tag}</option>`;
+  }).join('');
 }
 
 function replayApplyFilters() {
@@ -2610,22 +2716,18 @@ function replayApplyFilters() {
   const q = (search ? search.value : '').trim().toUpperCase();
 
   const variant = replayBestRun;
-  const sP = variant ? variant.params.sizing_pct : null;
-  const cP = variant ? variant.params.cut_pct : null;
 
   REPLAY_FILTERED = REPLAY_TRADES.filter(t => {
     if (strat !== 'all' && (t.primaryStrategy || '(none)') !== strat) return false;
     if (q && !t.symbol.toUpperCase().includes(q)) return false;
     if (outcome === 'all') return true;
 
-    // Compare actual vs variant. Actual P&L lives on the trade itself.
     const actualPnl = +t.pnl || 0;
     if (outcome === 'actual_winner') return actualPnl > 0;
     if (outcome === 'actual_loser') return actualPnl <= 0;
 
-    // Variant requires the sim
     if (variant == null) return false;
-    const vari = replayMemoSimulate(t, sP, cP);
+    const vari = replayMemoSimulate(t, variant);
     if (!vari.ok) return false;
     if (outcome === 'variant_winner') return vari.pnl > 0;
     if (outcome === 'variant_stopped') return vari.stopped;
@@ -2638,7 +2740,9 @@ function replayApplyFilters() {
 function renderTradeReplay() {
   const empty = document.getElementById('replay-empty');
   const content = document.getElementById('replay-content');
-  if (!replayBestRun) replayBestRun = _findBest2DRun();
+  // Always re-pick the variant — the user may have selected a new row in Sizing Lab
+  replayBestRun = _findReplayVariantRun();
+  _populateReplayScenarioDropdown();
   if (!replayBestRun || !REPLAY_TRADES || REPLAY_TRADES.length === 0) {
     if (empty) empty.style.display = '';
     if (content) content.style.display = 'none';
@@ -2650,11 +2754,26 @@ function renderTradeReplay() {
   const variant = replayBestRun;
   const sP = variant.params.sizing_pct;
   const cP = variant.params.cut_pct;
+  const mode = _runMode(variant);
 
+  let scenarioDesc;
+  if (mode === 'rescale') {
+    scenarioDesc = `<strong>rescale @ sizing ${sP.toFixed(3)}</strong> (real entries &amp; exits, share count rescaled)`;
+  } else if (mode === 'sim_2d') {
+    scenarioDesc = `<strong>2D sim @ sizing ${sP.toFixed(3)} &middot; cut ${cP.toFixed(3)}</strong> (rule-based exits)`;
+  } else {
+    scenarioDesc = `<strong>1D sim @ sizing ${sP.toFixed(3)}</strong> (rule-based exits, historical cut)`;
+  }
+  const expR = variant.aggregate.expectancy_R;
   document.getElementById('replay-config-summary').innerHTML =
-    `Comparing baseline (size 1.0, historical cut) vs best 2D run: <strong>sizing ${sP.toFixed(3)} \u00b7 cut ${cP.toFixed(3)}</strong> &mdash; expectancy ${variant.aggregate.expectancy_R >= 0 ? '+' : ''}${variant.aggregate.expectancy_R.toFixed(3)}R fund-wide`;
-  document.getElementById('replay-var-config').textContent =
-    `size ${sP.toFixed(3)} \u00b7 cut ${cP.toFixed(3)}`;
+    `Right side: ${scenarioDesc} &mdash; fund expectancy ${expR >= 0 ? '+' : ''}${expR.toFixed(3)}R`;
+
+  const subLine = mode === 'rescale'
+    ? `rescale &middot; size ${sP.toFixed(3)}`
+    : (mode === 'sim_2d'
+      ? `sim 2D &middot; size ${sP.toFixed(3)} &middot; cut ${cP.toFixed(3)}`
+      : `sim 1D &middot; size ${sP.toFixed(3)} &middot; hist cut`);
+  document.getElementById('replay-var-config').innerHTML = subLine;
 
   if (!REPLAY_FILTERED || REPLAY_FILTERED.length === 0) {
     document.getElementById('replay-position').textContent = '0 / 0';
@@ -2685,13 +2804,17 @@ function renderTradeReplay() {
     ${trade.rMultiple != null ? `<span class="replay-meta-item ${trade.rMultiple >= 0 ? 'positive' : 'negative'}">Actual R: ${trade.rMultiple >= 0 ? '+' : ''}${trade.rMultiple.toFixed(2)}</span>` : ''}
   `;
 
-  const varSim = replayMemoSimulate(trade, sP, cP);
+  const varSim = replayMemoSimulate(trade, variant);
 
   document.getElementById('replay-orig-stats').innerHTML = _replayActualStatsHtml(trade);
   document.getElementById('replay-var-stats').innerHTML = _replayStatsHtml(varSim, trade);
 
   _replayRenderActualChart('replay-chart-orig', trade);
-  _replayRenderChart('replay-chart-var', 'var', trade, varSim);
+  if (mode === 'rescale') {
+    _replayRenderRescaleChart('replay-chart-var', trade, varSim);
+  } else {
+    _replayRenderChart('replay-chart-var', 'var', trade, varSim);
+  }
 }
 
 function _replayActualStatsHtml(trade) {
@@ -2882,6 +3005,163 @@ function _replayRenderActualChart(containerId, trade) {
   replayChartOrig = chart;
 }
 
+function _replayRenderRescaleChart(containerId, trade, sim) {
+  const container = document.getElementById(containerId);
+  container.innerHTML = '';
+  if (!sim || !sim.ok) {
+    container.innerHTML = `<div class="replay-no-data">${sim ? sim.reason : 'no simulation'}</div>`;
+    return;
+  }
+
+  const baseTicker = trade.symbol.split(' ')[0];
+  const tickerData = OHLC[baseTicker];
+  if (!tickerData || tickerData.length === 0) {
+    container.innerHTML = '<div class="replay-no-data">No OHLC for ' + baseTicker + '</div>';
+    return;
+  }
+
+  const entryIdx = tickerData.findIndex(d => d.t >= trade.entryDate);
+  if (entryIdx < 0) {
+    container.innerHTML = '<div class="replay-no-data">Entry date not in OHLC</div>';
+    return;
+  }
+  let exitIdx = tickerData.findIndex(d => d.t >= trade.exitDate);
+  if (exitIdx < 0) exitIdx = tickerData.length - 1;
+
+  const padBefore = 30;
+  const padAfter = 20;
+  const start = Math.max(0, entryIdx - padBefore);
+  const end = Math.min(tickerData.length, exitIdx + padAfter + 1);
+  const slice = tickerData.slice(start, end);
+
+  // Match the actual-chart's scale-correction so price lines line up
+  let scale = 1.0;
+  const entryBar = tickerData[entryIdx];
+  if (trade.plannedEntry != null && entryBar && entryBar.o > 0) {
+    const ratio = +trade.plannedEntry / entryBar.o;
+    if (ratio < 0.83 || ratio > 1.2) scale = ratio;
+  }
+
+  const candleData = slice.map(d => ({
+    time: d.t,
+    open: d.o * scale,
+    high: d.h * scale,
+    low: d.l * scale,
+    close: d.c * scale,
+  }));
+
+  const chart = LightweightCharts.createChart(container, {
+    ...CHART_OPTS,
+    rightPriceScale: { borderColor: 'rgba(229, 187, 118, 0.2)', scaleMargins: { top: 0.1, bottom: 0.1 } },
+  });
+
+  const candles = chart.addCandlestickSeries({
+    upColor: '#30d158', downColor: '#ff453a',
+    borderUpColor: '#30d158', borderDownColor: '#ff453a',
+    wickUpColor: '#30d158', wickDownColor: '#ff453a',
+  });
+  candles.setData(candleData);
+
+  // 20EMA reference
+  const closes = candleData.map(d => d.close);
+  const emaArr = _replayEMA(closes, 20);
+  const emaData = [];
+  for (let i = 0; i < emaArr.length; i++) {
+    if (emaArr[i] != null) emaData.push({ time: candleData[i].time, value: emaArr[i] });
+  }
+  if (emaData.length > 0) {
+    const emaSeries = chart.addLineSeries({
+      color: 'rgba(229, 187, 118, 0.7)',
+      lineWidth: 1,
+      priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false,
+      title: '20EMA',
+    });
+    emaSeries.setData(emaData);
+  }
+
+  // Horizontal lines: planned entry, planned cut, deep stop, RESCALED 1R/2R
+  candles.createPriceLine({
+    price: sim.entry, color: '#e5bb76', lineWidth: 2,
+    lineStyle: LightweightCharts.LineStyle.Solid,
+    axisLabelVisible: true, title: 'Entry',
+  });
+  if (sim.cut != null) {
+    candles.createPriceLine({
+      price: sim.cut, color: '#ff453a', lineWidth: 2,
+      lineStyle: LightweightCharts.LineStyle.Solid,
+      axisLabelVisible: true, title: 'Cut',
+    });
+  }
+  if (trade.plannedStop != null) {
+    candles.createPriceLine({
+      price: +trade.plannedStop, color: 'rgba(255, 69, 58, 0.55)', lineWidth: 1,
+      lineStyle: LightweightCharts.LineStyle.Dashed,
+      axisLabelVisible: true, title: 'Deep stop',
+    });
+  }
+  candles.createPriceLine({
+    price: sim.t1, color: '#30d158', lineWidth: 1,
+    lineStyle: LightweightCharts.LineStyle.Dashed,
+    axisLabelVisible: true, title: '+1R (rescaled)',
+  });
+  candles.createPriceLine({
+    price: sim.t2, color: '#5ee37f', lineWidth: 1,
+    lineStyle: LightweightCharts.LineStyle.Dashed,
+    axisLabelVisible: true, title: '+2R (rescaled)',
+  });
+
+  // Real entry/exit markers (rescale uses real exits)
+  const snap = (date) => {
+    for (let i = 0; i < candleData.length; i++) if (candleData[i].time >= date) return candleData[i].time;
+    return candleData[candleData.length - 1].time;
+  };
+  const isWin = sim.pnl >= 0;
+  const entryLegs = Array.isArray(trade.entryLegs) && trade.entryLegs.length ? trade.entryLegs : null;
+  const exitLegs = Array.isArray(trade.exitLegs) && trade.exitLegs.length ? trade.exitLegs : null;
+
+  const markers = [];
+  if (entryLegs) {
+    for (const leg of entryLegs) {
+      markers.push({
+        time: snap(leg.date),
+        position: 'belowBar', color: '#e5bb76', shape: 'arrowUp',
+        text: `Entry $${(+leg.price).toFixed(2)}`,
+      });
+    }
+  } else {
+    markers.push({
+      time: snap(trade.entryDate),
+      position: 'belowBar', color: '#e5bb76', shape: 'arrowUp',
+      text: `Entry $${(+trade.entry || 0).toFixed(2)}`,
+    });
+  }
+  if (exitLegs) {
+    for (const leg of exitLegs) {
+      markers.push({
+        time: snap(leg.date),
+        position: 'aboveBar',
+        color: isWin ? '#30d158' : '#ff453a',
+        shape: 'arrowDown',
+        text: `Exit $${(+leg.price).toFixed(2)}`,
+      });
+    }
+  } else {
+    markers.push({
+      time: snap(trade.exitDate),
+      position: 'aboveBar',
+      color: isWin ? '#30d158' : '#ff453a',
+      shape: 'arrowDown',
+      text: `Exit $${(+trade.exit || 0).toFixed(2)}`,
+    });
+  }
+  markers.sort((a, b) => a.time < b.time ? -1 : a.time > b.time ? 1 : 0);
+  candles.setMarkers(markers);
+
+  chart.timeScale().fitContent();
+  replayChartVar = chart;
+}
+
 function _replayStatsHtml(sim, trade) {
   if (!sim || !sim.ok) return `<div class="replay-stat-bad">Could not simulate (${sim ? sim.reason : 'unknown'})</div>`;
   const r = sim.r;
@@ -2891,6 +3171,7 @@ function _replayStatsHtml(sim, trade) {
     stop_in_trail: 'Stop in trail',
     trail_ema20: 'Trail @ 20EMA',
     'time-out': 'Time-out',
+    'real exit': 'Real exit (rescaled)',
   };
   return `
     <span class="replay-stat ${cls}">${r >= 0 ? '+' : ''}${r.toFixed(2)}R</span>
