@@ -25,6 +25,7 @@
     <button class="view-tab" data-view="analysis">Analysis</button>
     <button class="view-tab" data-view="trades">Trades<span class="tab-badge" id="trades-badge" style="display:none"></span></button>
     <button class="view-tab" data-view="sizing">Sizing Lab<span class="tab-badge" id="sizing-badge" style="display:none"></span></button>
+    <button class="view-tab" data-view="replay">Trade Replay<span class="tab-badge" id="replay-badge" style="display:none"></span></button>
   </nav>
 </header>
 
@@ -251,7 +252,7 @@
           Hide duplicate sizing values
         </label>
       </div>
-      <div class="sizing-history-wrap">
+      <div class="sizing-history-wrap" id="sizing-history-wrap-outer">
         <table class="sizing-history-table">
           <thead>
             <tr>
@@ -271,6 +272,79 @@
           </thead>
           <tbody id="sizing-history-tbody"></tbody>
         </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== TRADE REPLAY VIEW ===== -->
+  <div class="view" id="view-replay">
+    <div class="replay-header">
+      <h2 class="view-section-title" style="margin-top:0;">Trade Replay &mdash; Original vs Best 2D Run</h2>
+      <div class="replay-config-summary" id="replay-config-summary">Loading...</div>
+    </div>
+
+    <div class="replay-empty" id="replay-empty" style="display:none;">
+      <div class="replay-empty-title">No 2D runs available</div>
+      <div class="replay-empty-sub">
+        Run <code>python simulate_sizing.py --mode 2d --iters 120 --reset --seed 42</code> to populate <code>sizing_runs.json</code>, then refresh.
+      </div>
+    </div>
+
+    <div id="replay-content" style="display:none;">
+      <div class="replay-controls">
+        <div class="replay-filters">
+          <label>Strategy:
+            <select id="replay-strategy"><option value="all">All</option></select>
+          </label>
+          <label>Outcome:
+            <select id="replay-outcome">
+              <option value="all">All trades</option>
+              <option value="improved">Variant beats actual</option>
+              <option value="hurt">Variant worse than actual</option>
+              <option value="actual_winner">Actual winners</option>
+              <option value="actual_loser">Actual losers</option>
+              <option value="variant_winner">Variant winners</option>
+              <option value="variant_stopped">Variant stopped out</option>
+            </select>
+          </label>
+          <label>Search:
+            <input type="text" id="replay-search" placeholder="symbol..." />
+          </label>
+        </div>
+        <div class="replay-cycle">
+          <button class="replay-btn" id="replay-prev" title="Previous (\u2190)">&larr;</button>
+          <span class="replay-position" id="replay-position">&mdash;</span>
+          <button class="replay-btn" id="replay-next" title="Next (\u2192)">&rarr;</button>
+        </div>
+      </div>
+
+      <div class="replay-trade-meta" id="replay-trade-meta"></div>
+
+      <div class="replay-charts">
+        <div class="replay-chart-col">
+          <div class="replay-chart-label">
+            <span class="replay-chart-title">Your actual trade</span>
+            <span class="replay-chart-sub" id="replay-orig-config">real fills, real exits</span>
+          </div>
+          <div class="replay-chart-stats" id="replay-orig-stats"></div>
+          <div class="replay-chart-host" id="replay-chart-orig"></div>
+        </div>
+        <div class="replay-chart-col">
+          <div class="replay-chart-label">
+            <span class="replay-chart-title">Variant (best 2D run)</span>
+            <span class="replay-chart-sub" id="replay-var-config">&mdash;</span>
+          </div>
+          <div class="replay-chart-stats" id="replay-var-stats"></div>
+          <div class="replay-chart-host" id="replay-chart-var"></div>
+        </div>
+      </div>
+
+      <div class="replay-legend">
+        <span class="replay-legend-item"><span class="replay-legend-line" style="background:#ff453a"></span>Hard cut</span>
+        <span class="replay-legend-item"><span class="replay-legend-line replay-legend-dashed" style="border-color:rgba(255,69,58,0.55)"></span>Deep stop reference</span>
+        <span class="replay-legend-item"><span class="replay-legend-line" style="background:#30d158"></span>+1R target</span>
+        <span class="replay-legend-item"><span class="replay-legend-line" style="background:#5ee37f"></span>+2R target</span>
+        <span class="replay-legend-item"><span class="replay-legend-line" style="background:#e5bb76"></span>Entry</span>
       </div>
     </div>
   </div>

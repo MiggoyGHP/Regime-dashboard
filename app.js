@@ -445,6 +445,15 @@ let sizingHistorySort = 'expectancy_R';
 let sizingHistoryDedupe = true;
 let sizingHeatmapMetric = 'expectancy_R';
 
+// --- Trade Replay state ---
+let REPLAY_TRADES = null;          // filterable list of replayable trades
+let REPLAY_FILTERED = null;        // currently visible (after filters)
+let replayIndex = 0;
+let replayChartOrig = null;
+let replayChartVar = null;
+let replayBestRun = null;          // cached best 2D run
+let replaySimCache = new Map();    // key=tradeId|s|c -> simResult
+
 // --- Data Loading ---
 const _cb = '?v=' + Date.now();
 Promise.all([
@@ -482,6 +491,7 @@ function init() {
   setupKeyboardShortcuts();
   setupTradeDetailPanel();
   setupSizingLab();
+  setupTradeReplay();
   render();
 }
 
@@ -509,6 +519,9 @@ function switchView(view) {
   }
   if (view === 'sizing') {
     renderSizingLab();
+  }
+  if (view === 'replay') {
+    setTimeout(() => renderTradeReplay(), 30);
   }
 }
 
@@ -2278,12 +2291,738 @@ function renderSizingHistoryTable() {
   });
 }
 
+// ==========================================
+// TRADE REPLAY
+// ==========================================
+// JS port of simulate_sizing.simulate_trade so we can replay any trade
+// under any (sizing_pct, cut_pct) at view time without a Python round-trip.
+
+const REPLAY_LOOKAHEAD = 60;
+const REPLAY_EMA_PERIOD = 20;
+
+function _replayFindEntryIdx(bars, entryDate) {
+  let lo = 0, hi = bars.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (bars[mid].t < entryDate) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo < bars.length ? lo : -1;
+}
+
+function _replayEMA(closes, period) {
+  const n = closes.length;
+  const out = new Array(n).fill(null);
+  if (n < period) return out;
+  const alpha = 2 / (period + 1);
+  let sum = 0;
+  for (let i = 0; i < period; i++) sum += closes[i];
+  out[period - 1] = sum / period;
+  for (let i = period; i < n; i++) {
+    out[i] = alpha * closes[i] + (1 - alpha) * out[i - 1];
+  }
+  return out;
+}
+
+// Returns:
+//   { ok, pnl, r, holdingDays, exitReason, stopped, tranchesFilled,
+//     shares, entry, cut, t1, t2, fills, lastBarDate, scale }
+// or { ok:false, reason } if unsimulatable.
+function replaySimulateTrade(trade, sizingPct, cutPct) {
+  const baseTicker = trade.symbol.split(' ')[0];
+  const bars = OHLC[baseTicker];
+  if (!bars || bars.length === 0) return { ok: false, reason: 'no OHLC' };
+  if (trade.plannedEntry == null || trade.plannedStop == null || trade.riskDollars == null) {
+    return { ok: false, reason: 'missing fields' };
+  }
+  const side = trade.side === 'Buy' ? 1 : -1;
+  const entry = +trade.plannedEntry;
+  const risk = +trade.riskDollars;
+  const deepDist = Math.abs(entry - +trade.plannedStop);
+  if (deepDist <= 0 || risk <= 0) return { ok: false, reason: 'bad distance' };
+
+  const cut = (cutPct == null)
+    ? +trade.plannedCut
+    : entry - side * cutPct * deepDist;
+  if (cut == null || isNaN(cut)) return { ok: false, reason: 'no cut' };
+
+  const sd = sizingPct * deepDist;
+  if (sd <= 0) return { ok: false, reason: 'bad sizing' };
+  const shares = risk / sd;
+  const t1 = entry + side * sd;
+  const t2 = entry + side * 2 * sd;
+
+  const si = _replayFindEntryIdx(bars, trade.entryDate);
+  if (si < 0) return { ok: false, reason: 'entry date not in OHLC' };
+
+  // Scale-correction for split-adjusted bars
+  const entryBar = bars[si];
+  let scale = 1.0;
+  if (entryBar.o && entryBar.o > 0) {
+    const ratio = entry / entryBar.o;
+    if (ratio < 0.83 || ratio > 1.2) scale = ratio;
+  }
+
+  // EMA on a wide window so the value at j is well-seeded
+  const calcStart = Math.max(0, si - 80);
+  const calcEnd = Math.min(bars.length, si + REPLAY_LOOKAHEAD + 1);
+  const closes = [];
+  for (let i = calcStart; i < calcEnd; i++) closes.push(bars[i].c);
+  const emaArr = _replayEMA(closes, REPLAY_EMA_PERIOD);
+  const emaAt = (j) => {
+    const localIdx = j - calcStart;
+    if (localIdx < 0 || localIdx >= emaArr.length) return null;
+    return emaArr[localIdx];
+  };
+
+  let state = 'open';
+  let realized = 0;
+  let exitDate = trade.entryDate;
+  let exitReason = 'time-out';
+  let tranches = 0;
+  const fills = [];
+  let lastIdx = si;
+
+  const end = Math.min(si + REPLAY_LOOKAHEAD, bars.length);
+  for (let j = si; j < end; j++) {
+    const b = bars[j];
+    const h = b.h * scale;
+    const l = b.l * scale;
+    const c = b.c * scale;
+    lastIdx = j;
+
+    if (state === 'after_2R') {
+      // Trail mode — stop still applies, then 20EMA close exit
+      const stopHit = side > 0 ? l <= cut : h >= cut;
+      if (stopHit) {
+        const remain = shares * 0.25;
+        realized += side * (cut - entry) * remain;
+        fills.push({ date: b.t, price: cut, qty: remain, label: 'STOP (trail)', kind: 'stop' });
+        state = 'closed';
+        exitDate = b.t;
+        exitReason = 'stop_in_trail';
+        break;
+      }
+      const ema = emaAt(j);
+      if (ema != null) {
+        const e = ema * scale;
+        const exited = side > 0 ? c < e : c > e;
+        if (exited) {
+          const remain = shares * 0.25;
+          realized += side * (c - entry) * remain;
+          fills.push({ date: b.t, price: c, qty: remain, label: 'Trail @ 20EMA', kind: 'trail' });
+          state = 'closed';
+          exitDate = b.t;
+          exitReason = 'trail_ema20';
+          break;
+        }
+      }
+      continue;
+    }
+
+    // Stop check (conservative)
+    const stopHit = side > 0 ? l <= cut : h >= cut;
+    if (stopHit) {
+      const remain = state === 'open' ? shares : shares * 0.5;
+      realized += side * (cut - entry) * remain;
+      fills.push({ date: b.t, price: cut, qty: remain, label: 'STOP', kind: 'stop' });
+      state = 'closed';
+      exitDate = b.t;
+      exitReason = 'stop';
+      break;
+    }
+
+    // 1R fill
+    if (state === 'open') {
+      const hit1 = side > 0 ? h >= t1 : l <= t1;
+      if (hit1) {
+        const qty1 = shares * 0.5;
+        realized += side * (t1 - entry) * qty1;
+        fills.push({ date: b.t, price: t1, qty: qty1, label: '1/2 @ +1R', kind: 't1' });
+        state = 'after_1R';
+        tranches = 1;
+      }
+    }
+    // 2R fill (same bar permitted)
+    if (state === 'after_1R') {
+      const hit2 = side > 0 ? h >= t2 : l <= t2;
+      if (hit2) {
+        const qty2 = shares * 0.25;
+        realized += side * (t2 - entry) * qty2;
+        fills.push({ date: b.t, price: t2, qty: qty2, label: '1/4 @ +2R', kind: 't2' });
+        state = 'after_2R';
+        tranches = 2;
+      }
+    }
+  }
+
+  // Time-out force close
+  if (state !== 'closed') {
+    const bar = bars[lastIdx];
+    const lastClose = bar.c * scale;
+    let remain;
+    if (state === 'open') remain = shares;
+    else if (state === 'after_1R') remain = shares * 0.5;
+    else remain = shares * 0.25;
+    realized += side * (lastClose - entry) * remain;
+    fills.push({ date: bar.t, price: lastClose, qty: remain, label: 'Time-out close', kind: 'timeout' });
+    exitDate = bar.t;
+    exitReason = 'time-out';
+  }
+
+  // Holding days (calendar)
+  let holdingDays = 0;
+  try {
+    const d0 = new Date(trade.entryDate + 'T00:00:00Z').getTime();
+    const d1 = new Date(exitDate + 'T00:00:00Z').getTime();
+    holdingDays = Math.max(0, Math.round((d1 - d0) / 86400000));
+  } catch (e) { holdingDays = 0; }
+
+  return {
+    ok: true,
+    pnl: realized,
+    r: realized / risk,
+    holdingDays,
+    exitReason,
+    stopped: exitReason === 'stop' || exitReason === 'stop_in_trail',
+    tranchesFilled: tranches,
+    shares,
+    entry,
+    cut,
+    t1,
+    t2,
+    fills,
+    lastBarDate: exitDate,
+    scale,
+    side,
+  };
+}
+
+function _replayCacheKey(tradeId, sizingPct, cutPct) {
+  return tradeId + '|' + (sizingPct == null ? 'h' : sizingPct.toFixed(4)) + '|' + (cutPct == null ? 'h' : cutPct.toFixed(4));
+}
+
+function replayMemoSimulate(trade, sizingPct, cutPct) {
+  const k = _replayCacheKey(trade.tradeId, sizingPct, cutPct);
+  if (replaySimCache.has(k)) return replaySimCache.get(k);
+  const res = replaySimulateTrade(trade, sizingPct, cutPct);
+  replaySimCache.set(k, res);
+  return res;
+}
+
+function _findBest2DRun() {
+  const runs = (SIZING_RUNS && SIZING_RUNS.runs) || [];
+  let best = null;
+  for (const r of runs) {
+    if (r.params.cut_pct == null) continue;
+    if (r.is_baseline) continue;
+    if (best == null || r.aggregate.expectancy_R > best.aggregate.expectancy_R) best = r;
+  }
+  return best;
+}
+
+function setupTradeReplay() {
+  // Build the replayable trade list from data.json
+  if (!DATA || !DATA.regimeTrades || !DATA.regimeTrades.regime8) return;
+  REPLAY_TRADES = DATA.regimeTrades.regime8.filter(t =>
+    t.plannedEntry != null && t.plannedStop != null && t.plannedCut != null
+    && t.riskDollars != null && OHLC[t.symbol.split(' ')[0]]
+  ).sort((a, b) => (a.entryDate || '').localeCompare(b.entryDate || ''));
+
+  // Populate strategy filter dropdown
+  const stratSel = document.getElementById('replay-strategy');
+  if (stratSel) {
+    const seen = new Set();
+    for (const t of REPLAY_TRADES) seen.add(t.primaryStrategy || '(none)');
+    const opts = ['<option value="all">All</option>']
+      .concat(Array.from(seen).sort().map(s => `<option value="${s}">${s}</option>`));
+    stratSel.innerHTML = opts.join('');
+    stratSel.addEventListener('change', () => { replayApplyFilters(); replayIndex = 0; renderTradeReplay(); });
+  }
+  const outSel = document.getElementById('replay-outcome');
+  if (outSel) outSel.addEventListener('change', () => { replayApplyFilters(); replayIndex = 0; renderTradeReplay(); });
+  const search = document.getElementById('replay-search');
+  if (search) search.addEventListener('input', () => { replayApplyFilters(); replayIndex = 0; renderTradeReplay(); });
+
+  document.getElementById('replay-prev').addEventListener('click', () => {
+    if (!REPLAY_FILTERED || REPLAY_FILTERED.length === 0) return;
+    replayIndex = (replayIndex - 1 + REPLAY_FILTERED.length) % REPLAY_FILTERED.length;
+    renderTradeReplay();
+  });
+  document.getElementById('replay-next').addEventListener('click', () => {
+    if (!REPLAY_FILTERED || REPLAY_FILTERED.length === 0) return;
+    replayIndex = (replayIndex + 1) % REPLAY_FILTERED.length;
+    renderTradeReplay();
+  });
+
+  // Keyboard navigation while on the replay tab
+  document.addEventListener('keydown', (e) => {
+    if (currentView !== 'replay') return;
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT')) return;
+    if (e.key === 'ArrowLeft') document.getElementById('replay-prev').click();
+    if (e.key === 'ArrowRight') document.getElementById('replay-next').click();
+  });
+
+  replayBestRun = _findBest2DRun();
+  replayApplyFilters();
+
+  const badge = document.getElementById('replay-badge');
+  if (badge && REPLAY_TRADES) {
+    badge.textContent = REPLAY_TRADES.length;
+    badge.style.display = '';
+  }
+}
+
+function replayApplyFilters() {
+  if (!REPLAY_TRADES) { REPLAY_FILTERED = []; return; }
+  const stratSel = document.getElementById('replay-strategy');
+  const outSel = document.getElementById('replay-outcome');
+  const search = document.getElementById('replay-search');
+  const strat = stratSel ? stratSel.value : 'all';
+  const outcome = outSel ? outSel.value : 'all';
+  const q = (search ? search.value : '').trim().toUpperCase();
+
+  const variant = replayBestRun;
+  const sP = variant ? variant.params.sizing_pct : null;
+  const cP = variant ? variant.params.cut_pct : null;
+
+  REPLAY_FILTERED = REPLAY_TRADES.filter(t => {
+    if (strat !== 'all' && (t.primaryStrategy || '(none)') !== strat) return false;
+    if (q && !t.symbol.toUpperCase().includes(q)) return false;
+    if (outcome === 'all') return true;
+
+    // Compare actual vs variant. Actual P&L lives on the trade itself.
+    const actualPnl = +t.pnl || 0;
+    if (outcome === 'actual_winner') return actualPnl > 0;
+    if (outcome === 'actual_loser') return actualPnl <= 0;
+
+    // Variant requires the sim
+    if (variant == null) return false;
+    const vari = replayMemoSimulate(t, sP, cP);
+    if (!vari.ok) return false;
+    if (outcome === 'variant_winner') return vari.pnl > 0;
+    if (outcome === 'variant_stopped') return vari.stopped;
+    if (outcome === 'improved') return vari.pnl > actualPnl + 1;
+    if (outcome === 'hurt') return vari.pnl < actualPnl - 1;
+    return true;
+  });
+}
+
+function renderTradeReplay() {
+  const empty = document.getElementById('replay-empty');
+  const content = document.getElementById('replay-content');
+  if (!replayBestRun) replayBestRun = _findBest2DRun();
+  if (!replayBestRun || !REPLAY_TRADES || REPLAY_TRADES.length === 0) {
+    if (empty) empty.style.display = '';
+    if (content) content.style.display = 'none';
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  if (content) content.style.display = '';
+
+  const variant = replayBestRun;
+  const sP = variant.params.sizing_pct;
+  const cP = variant.params.cut_pct;
+
+  document.getElementById('replay-config-summary').innerHTML =
+    `Comparing baseline (size 1.0, historical cut) vs best 2D run: <strong>sizing ${sP.toFixed(3)} \u00b7 cut ${cP.toFixed(3)}</strong> &mdash; expectancy ${variant.aggregate.expectancy_R >= 0 ? '+' : ''}${variant.aggregate.expectancy_R.toFixed(3)}R fund-wide`;
+  document.getElementById('replay-var-config').textContent =
+    `size ${sP.toFixed(3)} \u00b7 cut ${cP.toFixed(3)}`;
+
+  if (!REPLAY_FILTERED || REPLAY_FILTERED.length === 0) {
+    document.getElementById('replay-position').textContent = '0 / 0';
+    document.getElementById('replay-trade-meta').innerHTML = '<div class="replay-no-trades">No trades match the current filters.</div>';
+    document.getElementById('replay-orig-stats').innerHTML = '';
+    document.getElementById('replay-var-stats').innerHTML = '';
+    document.getElementById('replay-chart-orig').innerHTML = '';
+    document.getElementById('replay-chart-var').innerHTML = '';
+    return;
+  }
+
+  if (replayIndex >= REPLAY_FILTERED.length) replayIndex = 0;
+  const trade = REPLAY_FILTERED[replayIndex];
+  document.getElementById('replay-position').textContent = `${replayIndex + 1} / ${REPLAY_FILTERED.length}`;
+
+  // Trade meta line
+  const isWin = trade.pnl >= 0;
+  document.getElementById('replay-trade-meta').innerHTML = `
+    <span class="replay-meta-symbol">${trade.symbol}</span>
+    <span class="replay-meta-item">${trade.entryDate} &rarr; ${trade.exitDate}</span>
+    <span class="replay-meta-item">${trade.side}</span>
+    ${trade.primaryStrategy ? `<span class="replay-meta-item"><span class="strategy-badge ${strategyClass(trade.primaryStrategy)}">${strategyLabel(trade.primaryStrategy)}</span></span>` : ''}
+    <span class="replay-meta-item">Risk: $${(trade.riskDollars || 0).toLocaleString()}</span>
+    <span class="replay-meta-item">Sized @ $${trade.plannedEntry.toFixed(2)}</span>
+    <span class="replay-meta-item">Deep stop $${trade.plannedStop.toFixed(2)}</span>
+    <span class="replay-meta-item">Historical cut $${trade.plannedCut.toFixed(2)}</span>
+    <span class="replay-meta-item ${isWin ? 'positive' : 'negative'}">Actual P&L: ${fmtPnL(trade.pnl)}</span>
+    ${trade.rMultiple != null ? `<span class="replay-meta-item ${trade.rMultiple >= 0 ? 'positive' : 'negative'}">Actual R: ${trade.rMultiple >= 0 ? '+' : ''}${trade.rMultiple.toFixed(2)}</span>` : ''}
+  `;
+
+  const varSim = replayMemoSimulate(trade, sP, cP);
+
+  document.getElementById('replay-orig-stats').innerHTML = _replayActualStatsHtml(trade);
+  document.getElementById('replay-var-stats').innerHTML = _replayStatsHtml(varSim, trade);
+
+  _replayRenderActualChart('replay-chart-orig', trade);
+  _replayRenderChart('replay-chart-var', 'var', trade, varSim);
+}
+
+function _replayActualStatsHtml(trade) {
+  const pnl = +trade.pnl || 0;
+  const cls = pnl >= 0 ? 'positive' : 'negative';
+  let holding = 0;
+  try {
+    const d0 = new Date(trade.entryDate + 'T00:00:00Z').getTime();
+    const d1 = new Date(trade.exitDate + 'T00:00:00Z').getTime();
+    holding = Math.max(0, Math.round((d1 - d0) / 86400000));
+  } catch (e) { holding = 0; }
+  const rTxt = trade.rMultiple != null
+    ? `<span class="replay-stat ${trade.rMultiple >= 0 ? 'positive' : 'negative'}">${trade.rMultiple >= 0 ? '+' : ''}${trade.rMultiple.toFixed(2)}R</span>`
+    : '';
+  const qty = trade.qty != null ? Math.round(+trade.qty).toLocaleString() : '?';
+  const exitPx = trade.exit != null ? `$${(+trade.exit).toFixed(2)}` : '?';
+  return `
+    ${rTxt}
+    <span class="replay-stat ${cls}">${fmtPnL(pnl)}</span>
+    <span class="replay-stat">${qty} sh</span>
+    <span class="replay-stat">${holding}d hold</span>
+    <span class="replay-stat replay-stat-reason">exit ${exitPx}</span>
+  `;
+}
+
+function _replayRenderActualChart(containerId, trade) {
+  const container = document.getElementById(containerId);
+  container.innerHTML = '';
+
+  const baseTicker = trade.symbol.split(' ')[0];
+  const tickerData = OHLC[baseTicker];
+  if (!tickerData || tickerData.length === 0) {
+    container.innerHTML = '<div class="replay-no-data">No OHLC for ' + baseTicker + '</div>';
+    return;
+  }
+
+  const entryIdx = tickerData.findIndex(d => d.t >= trade.entryDate);
+  if (entryIdx < 0) {
+    container.innerHTML = '<div class="replay-no-data">Entry date not in OHLC</div>';
+    return;
+  }
+  let exitIdx = tickerData.findIndex(d => d.t >= trade.exitDate);
+  if (exitIdx < 0) exitIdx = tickerData.length - 1;
+
+  const padBefore = 30;
+  const padAfter = 20;
+  const start = Math.max(0, entryIdx - padBefore);
+  const end = Math.min(tickerData.length, exitIdx + padAfter + 1);
+  const slice = tickerData.slice(start, end);
+
+  // Detect split-adjusted bars and rescale to match the planned/actual price scale.
+  // We anchor on plannedEntry vs the entry-day open (same heuristic as the simulator).
+  let scale = 1.0;
+  const entryBar = tickerData[entryIdx];
+  if (trade.plannedEntry != null && entryBar && entryBar.o > 0) {
+    const ratio = +trade.plannedEntry / entryBar.o;
+    if (ratio < 0.83 || ratio > 1.2) scale = ratio;
+  }
+
+  const candleData = slice.map(d => ({
+    time: d.t,
+    open: d.o * scale,
+    high: d.h * scale,
+    low: d.l * scale,
+    close: d.c * scale,
+  }));
+
+  const chart = LightweightCharts.createChart(container, {
+    ...CHART_OPTS,
+    rightPriceScale: { borderColor: 'rgba(229, 187, 118, 0.2)', scaleMargins: { top: 0.1, bottom: 0.1 } },
+  });
+
+  const candles = chart.addCandlestickSeries({
+    upColor: '#30d158', downColor: '#ff453a',
+    borderUpColor: '#30d158', borderDownColor: '#ff453a',
+    wickUpColor: '#30d158', wickDownColor: '#ff453a',
+  });
+  candles.setData(candleData);
+
+  // 20EMA reference line
+  const closes = candleData.map(d => d.close);
+  const emaArr = _replayEMA(closes, 20);
+  const emaData = [];
+  for (let i = 0; i < emaArr.length; i++) {
+    if (emaArr[i] != null) emaData.push({ time: candleData[i].time, value: emaArr[i] });
+  }
+  if (emaData.length > 0) {
+    const emaSeries = chart.addLineSeries({
+      color: 'rgba(229, 187, 118, 0.7)',
+      lineWidth: 1,
+      priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false,
+      title: '20EMA',
+    });
+    emaSeries.setData(emaData);
+  }
+
+  // Horizontal reference lines: planned entry, planned cut, deep stop,
+  // and the original (size-deeply) 1R/2R targets.
+  if (trade.plannedEntry != null) {
+    candles.createPriceLine({
+      price: +trade.plannedEntry, color: '#e5bb76', lineWidth: 2,
+      lineStyle: LightweightCharts.LineStyle.Solid,
+      axisLabelVisible: true, title: 'Planned entry',
+    });
+  }
+  if (trade.plannedCut != null) {
+    candles.createPriceLine({
+      price: +trade.plannedCut, color: '#ff453a', lineWidth: 2,
+      lineStyle: LightweightCharts.LineStyle.Solid,
+      axisLabelVisible: true, title: 'Planned cut',
+    });
+  }
+  if (trade.plannedStop != null) {
+    candles.createPriceLine({
+      price: +trade.plannedStop, color: 'rgba(255, 69, 58, 0.55)', lineWidth: 1,
+      lineStyle: LightweightCharts.LineStyle.Dashed,
+      axisLabelVisible: true, title: 'Deep stop',
+    });
+  }
+  if (trade.plannedEntry != null && trade.plannedStop != null) {
+    const side = trade.side === 'Buy' ? 1 : -1;
+    const deepDist = Math.abs(+trade.plannedEntry - +trade.plannedStop);
+    if (deepDist > 0) {
+      const t1 = +trade.plannedEntry + side * deepDist;
+      const t2 = +trade.plannedEntry + side * 2 * deepDist;
+      candles.createPriceLine({
+        price: t1, color: '#30d158', lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true, title: '+1R (planned)',
+      });
+      candles.createPriceLine({
+        price: t2, color: '#5ee37f', lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true, title: '+2R (planned)',
+      });
+    }
+  }
+
+  // Real entry and exit markers from the trade's leg arrays
+  const snap = (date) => {
+    for (let i = 0; i < candleData.length; i++) if (candleData[i].time >= date) return candleData[i].time;
+    return candleData[candleData.length - 1].time;
+  };
+  const isWin = (+trade.pnl || 0) >= 0;
+  const entryLegs = Array.isArray(trade.entryLegs) && trade.entryLegs.length ? trade.entryLegs : null;
+  const exitLegs = Array.isArray(trade.exitLegs) && trade.exitLegs.length ? trade.exitLegs : null;
+
+  const markers = [];
+  if (entryLegs) {
+    for (const leg of entryLegs) {
+      markers.push({
+        time: snap(leg.date),
+        position: 'belowBar', color: '#e5bb76', shape: 'arrowUp',
+        text: `Entry $${(+leg.price).toFixed(2)}`,
+      });
+    }
+  } else {
+    markers.push({
+      time: snap(trade.entryDate),
+      position: 'belowBar', color: '#e5bb76', shape: 'arrowUp',
+      text: `Entry $${(+trade.entry || 0).toFixed(2)}`,
+    });
+  }
+  if (exitLegs) {
+    for (const leg of exitLegs) {
+      markers.push({
+        time: snap(leg.date),
+        position: 'aboveBar',
+        color: isWin ? '#30d158' : '#ff453a',
+        shape: 'arrowDown',
+        text: `Exit $${(+leg.price).toFixed(2)}`,
+      });
+    }
+  } else {
+    markers.push({
+      time: snap(trade.exitDate),
+      position: 'aboveBar',
+      color: isWin ? '#30d158' : '#ff453a',
+      shape: 'arrowDown',
+      text: `Exit $${(+trade.exit || 0).toFixed(2)}`,
+    });
+  }
+  markers.sort((a, b) => a.time < b.time ? -1 : a.time > b.time ? 1 : 0);
+  candles.setMarkers(markers);
+
+  chart.timeScale().fitContent();
+  replayChartOrig = chart;
+}
+
+function _replayStatsHtml(sim, trade) {
+  if (!sim || !sim.ok) return `<div class="replay-stat-bad">Could not simulate (${sim ? sim.reason : 'unknown'})</div>`;
+  const r = sim.r;
+  const cls = r >= 0 ? 'positive' : 'negative';
+  const reasonLabels = {
+    stop: 'Hard stop',
+    stop_in_trail: 'Stop in trail',
+    trail_ema20: 'Trail @ 20EMA',
+    'time-out': 'Time-out',
+  };
+  return `
+    <span class="replay-stat ${cls}">${r >= 0 ? '+' : ''}${r.toFixed(2)}R</span>
+    <span class="replay-stat ${cls}">${fmtPnL(sim.pnl)}</span>
+    <span class="replay-stat">${Math.round(sim.shares).toLocaleString()} sh</span>
+    <span class="replay-stat">${sim.holdingDays}d hold</span>
+    <span class="replay-stat replay-stat-reason">${reasonLabels[sim.exitReason] || sim.exitReason}</span>
+  `;
+}
+
+function _replayRenderChart(containerId, side, trade, sim) {
+  const container = document.getElementById(containerId);
+  container.innerHTML = '';
+  if (!sim || !sim.ok) {
+    container.innerHTML = `<div class="replay-no-data">${sim ? sim.reason : 'no simulation'}</div>`;
+    return;
+  }
+
+  const baseTicker = trade.symbol.split(' ')[0];
+  const tickerData = OHLC[baseTicker];
+  if (!tickerData || tickerData.length === 0) {
+    container.innerHTML = '<div class="replay-no-data">No OHLC for ' + baseTicker + '</div>';
+    return;
+  }
+
+  const entryIdx = tickerData.findIndex(d => d.t >= trade.entryDate);
+  if (entryIdx < 0) {
+    container.innerHTML = '<div class="replay-no-data">Entry date not in OHLC</div>';
+    return;
+  }
+  let exitIdx = tickerData.findIndex(d => d.t >= sim.lastBarDate);
+  if (exitIdx < 0) exitIdx = tickerData.length - 1;
+
+  const padBefore = 30;
+  const padAfter = 20;
+  const start = Math.max(0, entryIdx - padBefore);
+  const end = Math.min(tickerData.length, exitIdx + padAfter + 1);
+  const slice = tickerData.slice(start, end);
+
+  // Apply scale-correction to displayed bars so price-line levels line up visually
+  const scale = sim.scale || 1.0;
+  const candleData = slice.map(d => ({
+    time: d.t,
+    open: d.o * scale,
+    high: d.h * scale,
+    low: d.l * scale,
+    close: d.c * scale,
+  }));
+
+  const chart = LightweightCharts.createChart(container, {
+    ...CHART_OPTS,
+    rightPriceScale: { borderColor: 'rgba(229, 187, 118, 0.2)', scaleMargins: { top: 0.1, bottom: 0.1 } },
+  });
+
+  const candles = chart.addCandlestickSeries({
+    upColor: '#30d158', downColor: '#ff453a',
+    borderUpColor: '#30d158', borderDownColor: '#ff453a',
+    wickUpColor: '#30d158', wickDownColor: '#ff453a',
+  });
+  candles.setData(candleData);
+
+  // 20-day EMA on the displayed slice (matches what the simulator's trail uses)
+  const closes = candleData.map(d => d.close);
+  const emaArr = _replayEMA(closes, 20);
+  const emaData = [];
+  for (let i = 0; i < emaArr.length; i++) {
+    if (emaArr[i] != null) emaData.push({ time: candleData[i].time, value: emaArr[i] });
+  }
+  if (emaData.length > 0) {
+    const emaSeries = chart.addLineSeries({
+      color: 'rgba(229, 187, 118, 0.7)',
+      lineWidth: 1,
+      priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false,
+      title: '20EMA',
+    });
+    emaSeries.setData(emaData);
+  }
+
+  // Horizontal price lines:
+  //   Entry (gold), Hard cut (red, solid), Deep stop reference (red, dashed),
+  //   1R target (green), 2R target (bright green)
+  candles.createPriceLine({
+    price: sim.entry, color: '#e5bb76', lineWidth: 2,
+    lineStyle: LightweightCharts.LineStyle.Solid,
+    axisLabelVisible: true, title: 'Entry',
+  });
+  candles.createPriceLine({
+    price: sim.cut, color: '#ff453a', lineWidth: 2,
+    lineStyle: LightweightCharts.LineStyle.Solid,
+    axisLabelVisible: true, title: 'Cut',
+  });
+  // Deep stop reference is the same on both charts (the structural deep stop)
+  candles.createPriceLine({
+    price: +trade.plannedStop, color: 'rgba(255, 69, 58, 0.55)', lineWidth: 1,
+    lineStyle: LightweightCharts.LineStyle.Dashed,
+    axisLabelVisible: true, title: 'Deep stop',
+  });
+  candles.createPriceLine({
+    price: sim.t1, color: '#30d158', lineWidth: 1,
+    lineStyle: LightweightCharts.LineStyle.Dashed,
+    axisLabelVisible: true, title: '+1R',
+  });
+  candles.createPriceLine({
+    price: sim.t2, color: '#5ee37f', lineWidth: 1,
+    lineStyle: LightweightCharts.LineStyle.Dashed,
+    axisLabelVisible: true, title: '+2R',
+  });
+
+  // Markers: entry arrow + every fill from the simulator
+  const snap = (date) => {
+    for (let i = 0; i < candleData.length; i++) if (candleData[i].time >= date) return candleData[i].time;
+    return candleData[candleData.length - 1].time;
+  };
+  const markers = [];
+  markers.push({
+    time: snap(trade.entryDate),
+    position: 'belowBar', color: '#e5bb76', shape: 'arrowUp',
+    text: `Entry $${sim.entry.toFixed(2)}`,
+  });
+  for (const f of sim.fills) {
+    let color = '#e5bb76';
+    if (f.kind === 't1') color = '#30d158';
+    if (f.kind === 't2') color = '#5ee37f';
+    if (f.kind === 'stop') color = '#ff453a';
+    if (f.kind === 'trail') color = '#e5bb76';
+    if (f.kind === 'timeout') color = 'rgba(255,255,255,0.6)';
+    markers.push({
+      time: snap(f.date),
+      position: 'aboveBar',
+      color,
+      shape: f.kind === 'stop' ? 'arrowDown' : 'arrowDown',
+      text: f.label,
+    });
+  }
+  markers.sort((a, b) => a.time < b.time ? -1 : a.time > b.time ? 1 : 0);
+  candles.setMarkers(markers);
+
+  chart.timeScale().fitContent();
+
+  // Track for resize
+  if (side === 'orig') replayChartOrig = chart;
+  else replayChartVar = chart;
+}
+
 // --- Resize Handling ---
 window.addEventListener('resize', () => {
   if (equityChart) equityChart.applyOptions({ width: document.getElementById('equity-chart').clientWidth });
   if (drawdownChart) drawdownChart.applyOptions({ width: document.getElementById('drawdown-chart').clientWidth });
   if (tradeChart) tradeChart.applyOptions({ width: document.getElementById('trade-chart').clientWidth });
   if (macdChart) macdChart.applyOptions({ width: document.getElementById('macd-chart').clientWidth });
+  if (replayChartOrig) {
+    const el = document.getElementById('replay-chart-orig');
+    if (el) replayChartOrig.applyOptions({ width: el.clientWidth });
+  }
+  if (replayChartVar) {
+    const el = document.getElementById('replay-chart-var');
+    if (el) replayChartVar.applyOptions({ width: el.clientWidth });
+  }
 });
 
 new ResizeObserver(() => {
