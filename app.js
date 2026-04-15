@@ -437,12 +437,22 @@ function applyTagEdit(tradeId, field, value) {
   if (selectedTradeIdx === tradeId) showTradeDetail(tradeId);
 }
 
+// --- Sizing Lab state ---
+let SIZING_RUNS = null;            // { runs: [...] } loaded from sizing_runs.json
+let sizingActiveRunId = null;
+let sizingStrategySort = { field: 'expectancy_R', dir: -1 };
+let sizingHistorySort = 'expectancy_R';
+let sizingHistoryDedupe = true;
+let sizingHeatmapMetric = 'expectancy_R';
+
 // --- Data Loading ---
 const _cb = '?v=' + Date.now();
 Promise.all([
   fetch('data.json' + _cb).then(r => { if (!r.ok) throw new Error('Failed to load data.json'); return r.json(); }),
   fetch('ohlc.json' + _cb).then(r => { if (!r.ok) throw new Error('Failed to load ohlc.json'); return r.json(); }),
-]).then(([d, o]) => { DATA = d; OHLC = o; normalizeDataColors(DATA); applyTagOverrides(); init(); })
+  // sizing_runs.json is optional — missing file is fine (empty state shown)
+  fetch('sizing_runs.json' + _cb).then(r => r.ok ? r.json() : { runs: [] }).catch(() => ({ runs: [] })),
+]).then(([d, o, s]) => { DATA = d; OHLC = o; SIZING_RUNS = s || { runs: [] }; normalizeDataColors(DATA); applyTagOverrides(); init(); })
 .catch(e => {
   document.querySelector('.content').innerHTML = `
     <div style="padding:60px 32px;text-align:center;">
@@ -471,6 +481,7 @@ function init() {
   setupTableControls();
   setupKeyboardShortcuts();
   setupTradeDetailPanel();
+  setupSizingLab();
   render();
 }
 
@@ -495,6 +506,9 @@ function switchView(view) {
       if (equityChart) equityChart.applyOptions({ width: document.getElementById('equity-chart').clientWidth });
       if (drawdownChart) drawdownChart.applyOptions({ width: document.getElementById('drawdown-chart').clientWidth });
     }, 20);
+  }
+  if (view === 'sizing') {
+    renderSizingLab();
   }
 }
 
@@ -1817,6 +1831,451 @@ function updateTradesTabBadge() {
     badge.textContent = count;
     badge.style.display = 'inline-flex';
   }
+}
+
+// ==========================================
+// SIZING LAB
+// ==========================================
+
+function setupSizingLab() {
+  // Wire up the controls. Render runs only when the user switches to the tab.
+  const sortSel = document.getElementById('sizing-history-sort');
+  if (sortSel) sortSel.addEventListener('change', () => {
+    sizingHistorySort = sortSel.value;
+    renderSizingHistoryTable();
+  });
+  const dedupeChk = document.getElementById('sizing-history-dedupe');
+  if (dedupeChk) dedupeChk.addEventListener('change', () => {
+    sizingHistoryDedupe = dedupeChk.checked;
+    renderSizingHistoryTable();
+  });
+  const showBest = document.getElementById('sizing-show-best');
+  if (showBest) showBest.addEventListener('click', () => {
+    const best = sizingBestRun();
+    if (best) { sizingActiveRunId = best.id; renderSizingLab(); }
+  });
+  const showBaseline = document.getElementById('sizing-show-baseline');
+  if (showBaseline) showBaseline.addEventListener('click', () => {
+    const b = sizingBaselineRun();
+    if (b) { sizingActiveRunId = b.id; renderSizingLab(); }
+  });
+  // Sortable per-strategy table
+  document.querySelectorAll('.sizing-strategy-table th[data-sort]').forEach(th => {
+    th.addEventListener('click', () => {
+      const f = th.dataset.sort;
+      if (sizingStrategySort.field === f) sizingStrategySort.dir *= -1;
+      else { sizingStrategySort.field = f; sizingStrategySort.dir = -1; }
+      renderSizingStrategyTable();
+    });
+  });
+  // Heatmap metric selector
+  const hmSel = document.getElementById('sizing-heatmap-metric');
+  if (hmSel) hmSel.addEventListener('change', () => {
+    sizingHeatmapMetric = hmSel.value;
+    renderSizingHeatmap();
+  });
+  // Badge with run count
+  const badge = document.getElementById('sizing-badge');
+  const n = SIZING_RUNS && SIZING_RUNS.runs ? SIZING_RUNS.runs.length : 0;
+  if (badge) {
+    if (n > 0) { badge.textContent = n; badge.style.display = ''; }
+    else badge.style.display = 'none';
+  }
+}
+
+function sizingBaselineRun() {
+  if (!SIZING_RUNS || !SIZING_RUNS.runs) return null;
+  return SIZING_RUNS.runs.find(r => r.is_baseline) || null;
+}
+
+function sizingBestRun() {
+  if (!SIZING_RUNS || !SIZING_RUNS.runs || SIZING_RUNS.runs.length === 0) return null;
+  let best = null;
+  for (const r of SIZING_RUNS.runs) {
+    if (best == null || r.aggregate.expectancy_R > best.aggregate.expectancy_R) best = r;
+  }
+  return best;
+}
+
+function sizingActiveRun() {
+  if (!SIZING_RUNS || !SIZING_RUNS.runs || SIZING_RUNS.runs.length === 0) return null;
+  if (sizingActiveRunId) {
+    const found = SIZING_RUNS.runs.find(r => r.id === sizingActiveRunId);
+    if (found) return found;
+  }
+  return sizingBestRun();
+}
+
+function renderSizingLab() {
+  const empty = document.getElementById('sizing-empty');
+  const content = document.getElementById('sizing-content');
+  const runs = (SIZING_RUNS && SIZING_RUNS.runs) || [];
+  if (runs.length === 0) {
+    if (empty) empty.style.display = '';
+    if (content) content.style.display = 'none';
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  if (content) content.style.display = '';
+
+  // Default the active run to the best the first time we render
+  if (!sizingActiveRunId) {
+    const best = sizingBestRun();
+    if (best) sizingActiveRunId = best.id;
+  }
+
+  renderSizingActiveHeader();
+  renderSizingStatCards();
+  renderSizingNotable();
+  renderSizingHeatmap();
+  renderSizingStrategyTable();
+  renderSizingHistoryTable();
+  document.getElementById('sizing-run-count').textContent = runs.length;
+}
+
+function renderSizingActiveHeader() {
+  const active = sizingActiveRun();
+  if (!active) return;
+  const idEl = document.getElementById('sizing-active-id');
+  const noteEl = document.getElementById('sizing-active-note');
+  const baseline = sizingBaselineRun();
+  const isBase = baseline && active.id === baseline.id;
+  const cv = active.params.cut_pct;
+  const cutHtml = cv != null
+    ? `, cut_pct = <strong>${cv.toFixed(3)}</strong>`
+    : ', cut = <em>historical</em>';
+  idEl.innerHTML = `sizing_pct = <strong>${active.params.sizing_pct.toFixed(3)}</strong>${cutHtml}`
+    + (isBase ? '  <span class="sizing-tag sizing-tag-base">baseline</span>' : '');
+  noteEl.textContent = active.note || '';
+}
+
+function _fmtR(x) { return (x >= 0 ? '+' : '') + x.toFixed(2) + 'R'; }
+function _fmtPct(x) { return (x * 100).toFixed(1) + '%'; }
+function _fmtMoney(x) {
+  const sign = x < 0 ? '-' : '';
+  return sign + '$' + Math.abs(x).toLocaleString('en-US', { maximumFractionDigits: 0 });
+}
+function _deltaCls(d) {
+  if (d == null) return '';
+  if (d > 0) return 'sizing-delta-pos';
+  if (d < 0) return 'sizing-delta-neg';
+  return '';
+}
+function _signed(x, dec = 2, suffix = '') {
+  if (x == null) return '—';
+  const s = x >= 0 ? '+' : '';
+  return s + x.toFixed(dec) + suffix;
+}
+
+function renderSizingStatCards() {
+  const active = sizingActiveRun();
+  const baseline = sizingBaselineRun();
+  if (!active) return;
+  const a = active.aggregate;
+  const d = active.deltas_vs_baseline || {};
+  const cards = [
+    {
+      label: 'Expectancy', value: _fmtR(a.expectancy_R),
+      delta: d.expectancy_R, deltaSuffix: 'R',
+    },
+    {
+      label: 'Win rate', value: _fmtPct(a.win_rate),
+      delta: d.win_rate != null ? d.win_rate * 100 : null, deltaSuffix: '%',
+    },
+    {
+      label: 'Stop-outs', value: a.stop_outs.toString(),
+      delta: d.stop_outs, deltaSuffix: '', isInt: true,
+    },
+    {
+      label: 'Avg holding (days)', value: a.avg_holding_days.toFixed(1),
+      delta: d.avg_holding_days, deltaSuffix: 'd',
+    },
+    {
+      label: 'Total P&L', value: _fmtMoney(a.total_pnl),
+      delta: d.total_pnl, deltaSuffix: '', isMoney: true,
+    },
+    {
+      label: '1R fill rate', value: _fmtPct(a.tranche_fill_rate_1R),
+      delta: null,
+    },
+    {
+      label: '2R fill rate', value: _fmtPct(a.tranche_fill_rate_2R),
+      delta: null,
+    },
+    {
+      label: 'Profit factor', value: a.profit_factor != null ? a.profit_factor.toFixed(2) : '—',
+      delta: null,
+    },
+  ];
+  const el = document.getElementById('sizing-stat-cards');
+  el.innerHTML = cards.map(c => {
+    let deltaHtml = '';
+    if (c.delta != null && baseline && active.id !== baseline.id) {
+      let txt;
+      if (c.isInt) txt = (c.delta >= 0 ? '+' : '') + c.delta + (c.deltaSuffix || '');
+      else if (c.isMoney) txt = (c.delta >= 0 ? '+' : '-') + '$' + Math.abs(c.delta).toLocaleString('en-US', { maximumFractionDigits: 0 });
+      else txt = _signed(c.delta, 2, c.deltaSuffix || '');
+      deltaHtml = `<div class="sizing-card-delta ${_deltaCls(c.delta)}">${txt} vs base</div>`;
+    }
+    return `<div class="sizing-card">
+      <div class="sizing-card-label">${c.label}</div>
+      <div class="sizing-card-value">${c.value}</div>
+      ${deltaHtml}
+    </div>`;
+  }).join('');
+}
+
+function renderSizingHeatmap() {
+  const wrap = document.getElementById('sizing-heatmap-wrap');
+  const host = document.getElementById('sizing-heatmap');
+  const legend = document.getElementById('sizing-heatmap-legend');
+  if (!wrap || !host) return;
+
+  // Only consider runs with explicit cut_pct (2D mode runs)
+  const runs = ((SIZING_RUNS && SIZING_RUNS.runs) || [])
+    .filter(r => r.params && r.params.cut_pct != null);
+  if (runs.length === 0) {
+    wrap.style.display = 'none';
+    return;
+  }
+  wrap.style.display = '';
+
+  // Bin by rounded (sizing, cut). When duplicates exist, keep the best by
+  // expectancy_R so the picture matches the run-history "best" highlights.
+  const cells = new Map();
+  const sSet = new Set();
+  const cSet = new Set();
+  for (const r of runs) {
+    const sv = Math.round(r.params.sizing_pct * 1000) / 1000;
+    const cv = Math.round(r.params.cut_pct * 1000) / 1000;
+    sSet.add(sv); cSet.add(cv);
+    const key = sv + '|' + cv;
+    const cur = cells.get(key);
+    if (!cur || r.aggregate.expectancy_R > cur.aggregate.expectancy_R) {
+      cells.set(key, r);
+    }
+  }
+  const sAxis = Array.from(sSet).sort((a, b) => a - b);
+  const cAxis = Array.from(cSet).sort((a, b) => a - b);
+
+  // Determine the metric range
+  const metric = sizingHeatmapMetric;
+  const vals = Array.from(cells.values())
+    .map(r => r.aggregate[metric])
+    .filter(v => v != null && !isNaN(v));
+  if (vals.length === 0) { host.innerHTML = ''; return; }
+  const lo = Math.min(...vals);
+  const hi = Math.max(...vals);
+
+  const usesDiverging = (metric === 'expectancy_R' || metric === 'total_pnl');
+  function color(v) {
+    if (v == null || isNaN(v)) return 'rgba(255,255,255,0.04)';
+    if (usesDiverging) {
+      const m = Math.max(Math.abs(lo), Math.abs(hi)) || 1;
+      const t = Math.max(-1, Math.min(1, v / m));
+      if (t >= 0) {
+        const a = 0.10 + 0.55 * t;
+        return `rgba(48, 209, 88, ${a.toFixed(3)})`;
+      }
+      const a = 0.10 + 0.55 * (-t);
+      return `rgba(255, 69, 58, ${a.toFixed(3)})`;
+    }
+    const span = (hi - lo) || 1;
+    const t = (v - lo) / span;
+    const a = 0.10 + 0.55 * t;
+    return `rgba(229, 187, 118, ${a.toFixed(3)})`;
+  }
+
+  function fmtCell(v) {
+    if (v == null || isNaN(v)) return '—';
+    if (metric === 'expectancy_R') return (v >= 0 ? '+' : '') + v.toFixed(2);
+    if (metric === 'total_pnl') {
+      const k = v / 1000;
+      return (k >= 0 ? '+' : '') + k.toFixed(0) + 'k';
+    }
+    if (metric === 'win_rate') return (v * 100).toFixed(0) + '%';
+    if (metric === 'avg_holding_days') return v.toFixed(0) + 'd';
+    return v.toString();
+  }
+
+  const baseline = sizingBaselineRun();
+  const activeId = sizingActiveRunId;
+
+  // Rows = sizing high to low, columns = cut low to high
+  const sRows = sAxis.slice().reverse();
+  let html = '<table class="sizing-heatmap-table"><thead><tr><th class="sizing-heatmap-corner">size \\ cut</th>';
+  for (const cv of cAxis) html += `<th>${cv.toFixed(2)}</th>`;
+  html += '</tr></thead><tbody>';
+  for (const sv of sRows) {
+    html += `<tr><th>${sv.toFixed(2)}</th>`;
+    for (const cv of cAxis) {
+      const r = cells.get(sv + '|' + cv);
+      if (!r) {
+        html += '<td class="sizing-heatmap-empty"></td>';
+        continue;
+      }
+      const v = r.aggregate[metric];
+      const isActive = r.id === activeId;
+      const isBase = baseline && r.id === baseline.id;
+      const cls = 'sizing-heatmap-cell'
+        + (isActive ? ' sizing-heatmap-active' : '')
+        + (isBase ? ' sizing-heatmap-base' : '');
+      const tooltip = `s=${sv.toFixed(3)} c=${cv.toFixed(3)}\nexpR ${r.aggregate.expectancy_R.toFixed(3)}\nwin ${(r.aggregate.win_rate*100).toFixed(0)}%\nstops ${r.aggregate.stop_outs}\nhold ${r.aggregate.avg_holding_days.toFixed(1)}d\npnl $${Math.round(r.aggregate.total_pnl).toLocaleString()}`;
+      html += `<td class="${cls}" style="background:${color(v)}" title="${tooltip}" data-run-id="${r.id}">${fmtCell(v)}</td>`;
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  host.innerHTML = html;
+
+  // Click to load
+  host.querySelectorAll('td.sizing-heatmap-cell').forEach(td => {
+    td.addEventListener('click', () => {
+      sizingActiveRunId = td.dataset.runId;
+      renderSizingActiveHeader();
+      renderSizingStatCards();
+      renderSizingNotable();
+      renderSizingHeatmap();
+      renderSizingStrategyTable();
+      renderSizingHistoryTable();
+    });
+  });
+
+  if (legend) {
+    if (usesDiverging) {
+      legend.innerHTML = `
+        <span class="sizing-legend-swatch" style="background:rgba(255,69,58,0.65)"></span>
+        <span class="sizing-legend-label">${fmtCell(lo)}</span>
+        <span class="sizing-legend-swatch" style="background:rgba(255,255,255,0.06)"></span>
+        <span class="sizing-legend-label">0</span>
+        <span class="sizing-legend-swatch" style="background:rgba(48,209,88,0.65)"></span>
+        <span class="sizing-legend-label">${fmtCell(hi)}</span>
+      `;
+    } else {
+      legend.innerHTML = `
+        <span class="sizing-legend-swatch" style="background:rgba(229,187,118,0.10)"></span>
+        <span class="sizing-legend-label">${fmtCell(lo)}</span>
+        <span class="sizing-legend-swatch" style="background:rgba(229,187,118,0.65)"></span>
+        <span class="sizing-legend-label">${fmtCell(hi)}</span>
+      `;
+    }
+  }
+}
+
+function renderSizingNotable() {
+  const active = sizingActiveRun();
+  const wrap = document.getElementById('sizing-notable');
+  const list = document.getElementById('sizing-notable-list');
+  if (!active || !active.notable_shifts || active.notable_shifts.length === 0) {
+    wrap.style.display = 'none';
+    return;
+  }
+  wrap.style.display = '';
+  list.innerHTML = active.notable_shifts.map(s => `<li>${s}</li>`).join('');
+}
+
+function renderSizingStrategyTable() {
+  const active = sizingActiveRun();
+  const tbody = document.getElementById('sizing-strategy-tbody');
+  if (!active) { tbody.innerHTML = ''; return; }
+  const rows = (active.per_strategy || []).slice();
+  const f = sizingStrategySort.field;
+  const dir = sizingStrategySort.dir;
+  rows.sort((a, b) => {
+    const av = a[f], bv = b[f];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (typeof av === 'string') return dir * av.localeCompare(bv);
+    return dir * (av - bv);
+  });
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td>${r.strategy}</td>
+      <td>${r.trades}</td>
+      <td>${_fmtR(r.expectancy_R)}</td>
+      <td class="${_deltaCls(r.delta_expectancy_R)}">${r.delta_expectancy_R != null ? _signed(r.delta_expectancy_R, 2, 'R') : '—'}</td>
+      <td>${_fmtPct(r.win_rate)}</td>
+      <td>${r.stop_outs}</td>
+      <td class="${_deltaCls(r.delta_stop_outs)}">${r.delta_stop_outs != null ? _signed(r.delta_stop_outs, 0) : '—'}</td>
+      <td>${r.avg_holding_days.toFixed(1)}</td>
+      <td class="${_deltaCls(r.delta_avg_holding_days)}">${r.delta_avg_holding_days != null ? _signed(r.delta_avg_holding_days, 1, 'd') : '—'}</td>
+      <td>${_fmtMoney(r.total_pnl)}</td>
+    </tr>
+  `).join('');
+}
+
+function renderSizingHistoryTable() {
+  const tbody = document.getElementById('sizing-history-tbody');
+  let runs = ((SIZING_RUNS && SIZING_RUNS.runs) || []).slice();
+  if (runs.length === 0) { tbody.innerHTML = ''; return; }
+  if (sizingHistoryDedupe) {
+    const seen = new Map();
+    for (const r of runs) {
+      const ck = r.params.cut_pct == null ? 'hist' : r.params.cut_pct.toFixed(3);
+      const key = r.params.sizing_pct.toFixed(3) + '|' + ck;
+      const cur = seen.get(key);
+      if (!cur || r.aggregate.expectancy_R > cur.aggregate.expectancy_R) {
+        seen.set(key, r);
+      }
+    }
+    runs = Array.from(seen.values());
+  }
+  // Sort
+  const f = sizingHistorySort;
+  runs.sort((a, b) => {
+    if (f === 'sizing_pct') return a.params.sizing_pct - b.params.sizing_pct;
+    if (f === 'cut_pct') {
+      const av = a.params.cut_pct == null ? -1 : a.params.cut_pct;
+      const bv = b.params.cut_pct == null ? -1 : b.params.cut_pct;
+      return av - bv;
+    }
+    if (f === 'timestamp') return (a.timestamp || '').localeCompare(b.timestamp || '');
+    return (b.aggregate[f] || 0) - (a.aggregate[f] || 0);
+  });
+
+  // Find best for highlighting
+  const bestExp = runs.reduce((m, r) => Math.max(m, r.aggregate.expectancy_R), -Infinity);
+  const baseline = sizingBaselineRun();
+
+  tbody.innerHTML = runs.map(r => {
+    const a = r.aggregate;
+    const d = r.deltas_vs_baseline || {};
+    const isActive = sizingActiveRunId === r.id;
+    const isBest = a.expectancy_R === bestExp;
+    const isBase = baseline && r.id === baseline.id;
+    let cls = '';
+    if (isActive) cls += ' sizing-row-active';
+    if (isBest) cls += ' sizing-row-best';
+    if (isBase) cls += ' sizing-row-base';
+    const cutCell = r.params.cut_pct != null ? r.params.cut_pct.toFixed(3) : '<em>hist</em>';
+    return `<tr class="${cls.trim()}" data-run-id="${r.id}">
+      <td>${r.params.sizing_pct.toFixed(3)}${isBase ? ' <span class="sizing-tag sizing-tag-base">base</span>' : ''}${isBest ? ' <span class="sizing-tag sizing-tag-best">best</span>' : ''}</td>
+      <td>${cutCell}</td>
+      <td>${_fmtR(a.expectancy_R)}</td>
+      <td class="${_deltaCls(d.expectancy_R)}">${d.expectancy_R != null && !isBase ? _signed(d.expectancy_R, 2, 'R') : '—'}</td>
+      <td>${_fmtPct(a.win_rate)}</td>
+      <td>${a.stop_outs}${d.stop_outs != null && !isBase ? ` <span class="sizing-mini ${_deltaCls(d.stop_outs)}">(${_signed(d.stop_outs, 0)})</span>` : ''}</td>
+      <td>${a.avg_holding_days.toFixed(1)}${d.avg_holding_days != null && !isBase ? ` <span class="sizing-mini ${_deltaCls(d.avg_holding_days)}">(${_signed(d.avg_holding_days, 1)})</span>` : ''}</td>
+      <td>${_fmtMoney(a.total_pnl)}</td>
+      <td>${_fmtPct(a.tranche_fill_rate_1R)} / ${_fmtPct(a.tranche_fill_rate_2R)}</td>
+      <td>${a.avg_shares_per_trade != null ? a.avg_shares_per_trade.toFixed(0) : '—'}</td>
+      <td class="sizing-note">${(r.note || '').replace(/</g, '&lt;')}</td>
+      <td class="sizing-ts">${(r.timestamp || '').replace('T', ' ').replace('Z', '')}</td>
+    </tr>`;
+  }).join('');
+
+  // Click to load
+  tbody.querySelectorAll('tr').forEach(tr => {
+    tr.addEventListener('click', () => {
+      sizingActiveRunId = tr.dataset.runId;
+      renderSizingActiveHeader();
+      renderSizingStatCards();
+      renderSizingNotable();
+      renderSizingStrategyTable();
+      renderSizingHistoryTable();
+    });
+  });
 }
 
 // --- Resize Handling ---
