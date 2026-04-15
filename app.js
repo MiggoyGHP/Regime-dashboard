@@ -1947,10 +1947,19 @@ function renderSizingLab() {
 }
 
 function _modeLabel(mode) {
+  if (mode === 'rescale_ratio') return 'ratio sweep (real exits)';
   if (mode === 'rescale') return 'rescale (real exits)';
   if (mode === 'sim_2d') return 'sim 2D (rule exits)';
   if (mode === 'sim_1d') return 'sim 1D (rule exits)';
   return mode || 'unknown';
+}
+
+function _runParamKey(run) {
+  return run && run.params && run.params.sizing_ratio != null ? 'sizing_ratio' : 'sizing_pct';
+}
+function _runParamValue(run) {
+  const k = _runParamKey(run);
+  return run.params[k];
 }
 
 function renderSizingActiveHeader() {
@@ -1963,14 +1972,16 @@ function renderSizingActiveHeader() {
   const cv = active.params.cut_pct;
   const mode = active.params.mode || (cv != null ? 'sim_2d' : 'sim_1d');
   let cutHtml;
-  if (mode === 'rescale') {
+  if (mode === 'rescale_ratio' || mode === 'rescale') {
     cutHtml = ' &middot; <em>real entries &amp; exits</em>';
   } else if (cv != null) {
     cutHtml = `, cut_pct = <strong>${cv.toFixed(3)}</strong>`;
   } else {
     cutHtml = ', cut = <em>historical</em>';
   }
-  idEl.innerHTML = `sizing_pct = <strong>${active.params.sizing_pct.toFixed(3)}</strong>${cutHtml}`
+  const paramLabel = mode === 'rescale_ratio' ? 'sizing_ratio' : 'sizing_pct';
+  const paramValue = _runParamValue(active);
+  idEl.innerHTML = `${paramLabel} = <strong>${paramValue.toFixed(3)}</strong>${cutHtml}`
     + ` <span class="sizing-tag sizing-tag-mode">${_modeLabel(mode)}</span>`
     + (isBase ? ' <span class="sizing-tag sizing-tag-base">baseline</span>' : '');
   noteEl.textContent = active.note || '';
@@ -2243,7 +2254,8 @@ function renderSizingHistoryTable() {
     const seen = new Map();
     for (const r of runs) {
       const ck = r.params.cut_pct == null ? 'hist' : r.params.cut_pct.toFixed(3);
-      const key = r.params.sizing_pct.toFixed(3) + '|' + ck;
+      const pv = _runParamValue(r);
+      const key = (r.params.mode || '') + '|' + pv.toFixed(3) + '|' + ck;
       const cur = seen.get(key);
       if (!cur || r.aggregate.expectancy_R > cur.aggregate.expectancy_R) {
         seen.set(key, r);
@@ -2254,7 +2266,7 @@ function renderSizingHistoryTable() {
   // Sort
   const f = sizingHistorySort;
   runs.sort((a, b) => {
-    if (f === 'sizing_pct') return a.params.sizing_pct - b.params.sizing_pct;
+    if (f === 'sizing_pct') return _runParamValue(a) - _runParamValue(b);
     if (f === 'cut_pct') {
       const av = a.params.cut_pct == null ? -1 : a.params.cut_pct;
       const bv = b.params.cut_pct == null ? -1 : b.params.cut_pct;
@@ -2280,8 +2292,11 @@ function renderSizingHistoryTable() {
     if (isBase) cls += ' sizing-row-base';
     const cutCell = r.params.cut_pct != null
       ? r.params.cut_pct.toFixed(3)
-      : (r.params.mode === 'rescale' ? '<em>n/a</em>' : '<em>hist</em>');
+      : (r.params.mode === 'rescale' || r.params.mode === 'rescale_ratio' ? '<em>n/a</em>' : '<em>hist</em>');
     const mode = r.params.mode || (r.params.cut_pct != null ? 'sim_2d' : 'sim_1d');
+    const paramValue = _runParamValue(r);
+    const isRatio = mode === 'rescale_ratio';
+    const paramChip = isRatio ? ' <span class="sizing-tag sizing-tag-ratio">ratio</span>' : '';
     const modeChip = ` <span class="sizing-tag sizing-tag-mode">${_modeLabel(mode)}</span>`;
     const stopsCell = a.stop_outs == null
       ? '—'
@@ -2290,7 +2305,7 @@ function renderSizingHistoryTable() {
       ? '—'
       : a.avg_holding_days.toFixed(1) + (d.avg_holding_days != null && !isBase ? ` <span class="sizing-mini ${_deltaCls(d.avg_holding_days)}">(${_signed(d.avg_holding_days, 1)})</span>` : '');
     return `<tr class="${cls.trim()}" data-run-id="${r.id}">
-      <td>${r.params.sizing_pct.toFixed(3)}${isBase ? ' <span class="sizing-tag sizing-tag-base">base</span>' : ''}${isBest ? ' <span class="sizing-tag sizing-tag-best">best</span>' : ''}${modeChip}</td>
+      <td>${paramValue.toFixed(3)}${paramChip}${isBase ? ' <span class="sizing-tag sizing-tag-base">base</span>' : ''}${isBest ? ' <span class="sizing-tag sizing-tag-best">best</span>' : ''}${modeChip}</td>
       <td>${cutCell}</td>
       <td>${_fmtR(a.expectancy_R)}</td>
       <td class="${_deltaCls(d.expectancy_R)}">${d.expectancy_R != null && !isBase ? _signed(d.expectancy_R, 2, 'R') : '—'}</td>
@@ -2572,13 +2587,61 @@ function replaySimulateRescale(trade, sizingPct) {
   };
 }
 
+// Ratio rescale: same idea as replaySimulateRescale but anchors to plannedCut
+// and uses risk_per_share = (1 + ratio) * |entry - cut|.
+function replaySimulateRescaleRatio(trade, sizingRatio) {
+  if (trade.plannedEntry == null || trade.plannedCut == null
+      || trade.riskDollars == null || !trade.qty || trade.pnl == null) {
+    return { ok: false, reason: 'missing fields' };
+  }
+  const side = trade.side === 'Buy' ? 1 : -1;
+  const entry = +trade.plannedEntry;
+  const cut = +trade.plannedCut;
+  const risk = +trade.riskDollars;
+  const cutDist = Math.abs(entry - cut);
+  if (cutDist <= 0 || risk <= 0) return { ok: false, reason: 'bad distance' };
+  const riskPerShare = (1 + sizingRatio) * cutDist;
+  if (riskPerShare <= 0) return { ok: false, reason: 'bad ratio' };
+  const newShares = risk / riskPerShare;
+  const perSharePnl = (+trade.pnl) / (+trade.qty);
+  const newPnl = perSharePnl * newShares;
+
+  let holdingDays = 0;
+  try {
+    const d0 = new Date(trade.entryDate + 'T00:00:00Z').getTime();
+    const d1 = new Date(trade.exitDate + 'T00:00:00Z').getTime();
+    holdingDays = Math.max(0, Math.round((d1 - d0) / 86400000));
+  } catch (e) {}
+
+  return {
+    ok: true,
+    mode: 'rescale_ratio',
+    pnl: newPnl,
+    r: newPnl / risk,
+    holdingDays,
+    exitReason: 'real exit',
+    stopped: false,
+    tranchesFilled: 0,
+    shares: newShares,
+    entry,
+    cut,
+    t1: entry + side * riskPerShare,
+    t2: entry + side * 2 * riskPerShare,
+    fills: [],
+    side,
+    scale: 1.0,
+    lastBarDate: trade.exitDate,
+  };
+}
+
 function _runMode(run) {
   if (!run || !run.params) return 'sim_1d';
   return run.params.mode || (run.params.cut_pct != null ? 'sim_2d' : 'sim_1d');
 }
 
 function _replayCacheKey(tradeId, run) {
-  return tradeId + '|' + _runMode(run) + '|' + (run.params.sizing_pct || 0).toFixed(4)
+  const pv = run.params.sizing_ratio != null ? run.params.sizing_ratio : (run.params.sizing_pct || 0);
+  return tradeId + '|' + _runMode(run) + '|' + pv.toFixed(4)
     + '|' + (run.params.cut_pct == null ? 'h' : run.params.cut_pct.toFixed(4));
 }
 
@@ -2588,7 +2651,9 @@ function replayMemoSimulate(trade, run) {
   if (replaySimCache.has(k)) return replaySimCache.get(k);
   const mode = _runMode(run);
   let res;
-  if (mode === 'rescale') {
+  if (mode === 'rescale_ratio') {
+    res = replaySimulateRescaleRatio(trade, run.params.sizing_ratio);
+  } else if (mode === 'rescale') {
     res = replaySimulateRescale(trade, run.params.sizing_pct);
   } else {
     res = replaySimulateTrade(trade, run.params.sizing_pct, run.params.cut_pct);
@@ -2696,13 +2761,16 @@ function _populateReplayScenarioDropdown() {
   const active = replayBestRun;
   sel.innerHTML = runs.map(r => {
     const mode = _runMode(r);
-    const modeShort = mode === 'rescale' ? 'rescale' : (mode === 'sim_2d' ? '2D' : '1D');
-    const sP = r.params.sizing_pct.toFixed(3);
+    const modeShort = mode === 'rescale_ratio' ? 'ratio'
+      : mode === 'rescale' ? 'rescale'
+      : (mode === 'sim_2d' ? '2D' : '1D');
+    const paramLbl = mode === 'rescale_ratio' ? 'r' : 's';
+    const pv = _runParamValue(r).toFixed(3);
     const cP = r.params.cut_pct != null ? ` c=${r.params.cut_pct.toFixed(3)}` : '';
     const exp = (r.aggregate.expectancy_R >= 0 ? '+' : '') + r.aggregate.expectancy_R.toFixed(2);
     const tag = r.is_baseline ? ' [base]' : '';
     const sel_attr = (active && r.id === active.id) ? ' selected' : '';
-    return `<option value="${r.id}"${sel_attr}>${modeShort}  s=${sP}${cP}  ${exp}R${tag}</option>`;
+    return `<option value="${r.id}"${sel_attr}>${modeShort}  ${paramLbl}=${pv}${cP}  ${exp}R${tag}</option>`;
   }).join('');
 }
 
@@ -2752,27 +2820,31 @@ function renderTradeReplay() {
   if (content) content.style.display = '';
 
   const variant = replayBestRun;
-  const sP = variant.params.sizing_pct;
+  const pV = _runParamValue(variant);
   const cP = variant.params.cut_pct;
   const mode = _runMode(variant);
 
   let scenarioDesc;
-  if (mode === 'rescale') {
-    scenarioDesc = `<strong>rescale @ sizing ${sP.toFixed(3)}</strong> (real entries &amp; exits, share count rescaled)`;
+  if (mode === 'rescale_ratio') {
+    scenarioDesc = `<strong>ratio sweep @ ratio ${pV.toFixed(3)}</strong> (real entries &amp; exits, shares rescaled via (1+ratio)&times;cut dist)`;
+  } else if (mode === 'rescale') {
+    scenarioDesc = `<strong>rescale @ sizing ${pV.toFixed(3)}</strong> (real entries &amp; exits, share count rescaled)`;
   } else if (mode === 'sim_2d') {
-    scenarioDesc = `<strong>2D sim @ sizing ${sP.toFixed(3)} &middot; cut ${cP.toFixed(3)}</strong> (rule-based exits)`;
+    scenarioDesc = `<strong>2D sim @ sizing ${pV.toFixed(3)} &middot; cut ${cP.toFixed(3)}</strong> (rule-based exits)`;
   } else {
-    scenarioDesc = `<strong>1D sim @ sizing ${sP.toFixed(3)}</strong> (rule-based exits, historical cut)`;
+    scenarioDesc = `<strong>1D sim @ sizing ${pV.toFixed(3)}</strong> (rule-based exits, historical cut)`;
   }
   const expR = variant.aggregate.expectancy_R;
   document.getElementById('replay-config-summary').innerHTML =
     `Right side: ${scenarioDesc} &mdash; fund expectancy ${expR >= 0 ? '+' : ''}${expR.toFixed(3)}R`;
 
-  const subLine = mode === 'rescale'
-    ? `rescale &middot; size ${sP.toFixed(3)}`
-    : (mode === 'sim_2d'
-      ? `sim 2D &middot; size ${sP.toFixed(3)} &middot; cut ${cP.toFixed(3)}`
-      : `sim 1D &middot; size ${sP.toFixed(3)} &middot; hist cut`);
+  const subLine = mode === 'rescale_ratio'
+    ? `ratio &middot; r ${pV.toFixed(3)}`
+    : mode === 'rescale'
+      ? `rescale &middot; size ${pV.toFixed(3)}`
+      : (mode === 'sim_2d'
+        ? `sim 2D &middot; size ${pV.toFixed(3)} &middot; cut ${cP.toFixed(3)}`
+        : `sim 1D &middot; size ${pV.toFixed(3)} &middot; hist cut`);
   document.getElementById('replay-var-config').innerHTML = subLine;
 
   if (!REPLAY_FILTERED || REPLAY_FILTERED.length === 0) {

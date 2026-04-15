@@ -458,6 +458,197 @@ def autoresearch_rescale(trades, ohlc, ema_cache, total_iters, lo=0.20, hi=2.00,
     return runs
 
 
+# ------------------------------------------------------------ rescale_ratio mode
+# Parameterizes share count by how far the "sizing price" sits BEYOND the cut,
+# expressed as a fraction of the cut-distance itself:
+#     ratio = (cut - sizing) / (entry - cut)      (long; shorts are mirrored)
+#     risk_per_share = (1 + ratio) * |entry - cut|
+#     shares         = riskDollars / risk_per_share
+# Real entries/exits/holding from the trade are preserved; only share count
+# and therefore P&L are rescaled. Baseline is ratio = 1.0.
+
+def simulate_trade_rescale_ratio(trade, sizing_ratio):
+    entry = float(trade.get("plannedEntry") or 0)
+    risk = float(trade.get("riskDollars") or 0)
+    cut = trade.get("plannedCut")
+    if cut is None:
+        return None
+    cut_dist = abs(entry - float(cut))
+    actual_qty = float(trade.get("qty") or 0)
+    actual_pnl = float(trade.get("pnl") or 0)
+    if cut_dist <= 0 or risk <= 0 or actual_qty <= 0:
+        return None
+
+    risk_per_share = (1.0 + float(sizing_ratio)) * cut_dist
+    if risk_per_share <= 0:
+        return None
+    new_shares = risk / risk_per_share
+    per_share_pnl = actual_pnl / actual_qty
+    new_pnl = per_share_pnl * new_shares
+
+    try:
+        d0 = date.fromisoformat(trade["entryDate"])
+        d1 = date.fromisoformat(trade["exitDate"])
+        holding = max(0, (d1 - d0).days)
+    except Exception:
+        holding = 0
+
+    return {
+        "pnl": new_pnl,
+        "r": new_pnl / risk,
+        "holding_days": holding,
+        "shares": new_shares,
+    }
+
+
+def run_one_rescale_ratio(trades, ohlc, ema_cache, sizing_ratio, note="", is_baseline=False, idx=0):
+    sims = []
+    skipped = 0
+    for t in trades:
+        s = simulate_trade_rescale_ratio(t, sizing_ratio)
+        if s is None:
+            skipped += 1
+            continue
+        sims.append((t, s))
+
+    n = len(sims)
+    if n == 0:
+        return None
+
+    pnls = [s["pnl"] for _, s in sims]
+    rs = [s["r"] for _, s in sims]
+    holds = [s["holding_days"] for _, s in sims]
+    wins = [s for _, s in sims if s["pnl"] > 0]
+    gross_win = sum(s["pnl"] for _, s in sims if s["pnl"] > 0)
+    gross_loss = -sum(s["pnl"] for _, s in sims if s["pnl"] < 0)
+
+    aggregate = {
+        "trades_simulated": n,
+        "trades_skipped": skipped,
+        "total_pnl": round(sum(pnls), 2),
+        "expectancy_R": round(sum(rs) / n, 4),
+        "win_rate": round(len(wins) / n, 4),
+        "profit_factor": round(gross_win / gross_loss, 3) if gross_loss > 0 else None,
+        "stop_outs": None,
+        "stop_out_rate": None,
+        "avg_holding_days": round(sum(holds) / n, 2),
+        "tranche_fill_rate_1R": None,
+        "tranche_fill_rate_2R": None,
+        "avg_shares_per_trade": round(sum(s["shares"] for _, s in sims) / n, 1),
+    }
+
+    by_strat = defaultdict(list)
+    for t, s in sims:
+        key = t.get("primaryStrategy") or "(none)"
+        by_strat[key].append((t, s))
+
+    per_strategy = []
+    for strat, items in sorted(by_strat.items()):
+        m = len(items)
+        rs_s = [s["r"] for _, s in items]
+        wins_s = [s for _, s in items if s["pnl"] > 0]
+        holds_s = [s["holding_days"] for _, s in items]
+        per_strategy.append({
+            "strategy": strat,
+            "trades": m,
+            "expectancy_R": round(sum(rs_s) / m, 4),
+            "win_rate": round(len(wins_s) / m, 4),
+            "stop_outs": None,
+            "avg_holding_days": round(sum(holds_s) / m, 2),
+            "total_pnl": round(sum(s["pnl"] for _, s in items), 2),
+        })
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rid = f"run_{ts}_{idx:03d}"
+    return {
+        "id": rid,
+        "timestamp": ts,
+        "is_baseline": bool(is_baseline),
+        "params": {
+            "sizing_ratio": round(float(sizing_ratio), 4),
+            "mode": "rescale_ratio",
+        },
+        "note": note,
+        "aggregate": aggregate,
+        "per_strategy": per_strategy,
+        "deltas_vs_baseline": None,
+        "notable_shifts": [],
+    }
+
+
+def autoresearch_rescale_ratio(trades, ohlc, ema_cache, total_iters, lo=0.0, hi=2.0, seed=None):
+    """1D adaptive sweep of sizing_ratio for rescale_ratio mode. Baseline ratio = 1.0."""
+    if seed is not None:
+        random.seed(seed)
+    runs = []
+    idx = 0
+
+    baseline = run_one_rescale_ratio(
+        trades, ohlc, ema_cache, 1.0,
+        note="baseline (ratio=1.0, real exits)",
+        is_baseline=True, idx=idx,
+    )
+    runs.append(baseline)
+    idx += 1
+
+    coarse_n = max(8, total_iters // 3)
+    coarse_vals = [round(lo + (hi - lo) * i / (coarse_n - 1), 3) for i in range(coarse_n)]
+    for v in coarse_vals:
+        if idx - 1 >= total_iters:
+            break
+        r = run_one_rescale_ratio(trades, ohlc, ema_cache, v,
+                                  note=f"coarse pass [{lo}-{hi}]", idx=idx)
+        if r:
+            runs.append(r)
+            idx += 1
+
+    # Refine top 3 by expectancy
+    top = sorted(runs[1:], key=lambda r: r["aggregate"]["expectancy_R"], reverse=True)[:3]
+    refine_target = max(0, (total_iters - (idx - 1)) // 2)
+    if refine_target > 0 and top:
+        per_top = max(1, refine_target // len(top))
+        for tr in top:
+            base_v = tr["params"]["sizing_ratio"]
+            for _ in range(per_top):
+                if idx - 1 >= total_iters:
+                    break
+                v = round(clamp(base_v + random.gauss(0, 0.10), 0.0, 5.0), 3)
+                r = run_one_rescale_ratio(trades, ohlc, ema_cache, v,
+                                          note=f"refine around {base_v}", idx=idx)
+                if r:
+                    runs.append(r)
+                    idx += 1
+
+    # Hill climb
+    best = max(runs[1:], key=lambda r: r["aggregate"]["expectancy_R"])
+    best_v = best["params"]["sizing_ratio"]
+    step = 0.05
+    safety = 0
+    while idx - 1 < total_iters and safety < 200:
+        safety += 1
+        improved = False
+        for delta in (-step, +step):
+            if idx - 1 >= total_iters:
+                break
+            v = round(clamp(best_v + delta, 0.0, 5.0), 3)
+            r = run_one_rescale_ratio(trades, ohlc, ema_cache, v,
+                                      note=f"hill-climb step {step:.3f}", idx=idx)
+            if r:
+                runs.append(r)
+                idx += 1
+                if r["aggregate"]["expectancy_R"] > best["aggregate"]["expectancy_R"]:
+                    best = r
+                    best_v = v
+                    improved = True
+        if not improved:
+            step *= 0.5
+            if step < 0.005:
+                break
+
+    attach_deltas(runs, baseline)
+    return runs
+
+
 def run_one(trades, ohlc, ema_cache, sizing_pct, note="", is_baseline=False, idx=0, cut_pct=None):
     sims = []
     skipped = 0
@@ -819,10 +1010,11 @@ def main():
     ap = argparse.ArgumentParser(description="Sizing autoresearch sweep.")
     ap.add_argument("--iters", type=int, default=80,
                     help="Total simulation iterations (excludes baseline). Default 80.")
-    ap.add_argument("--mode", choices=("1d", "2d", "rescale"), default="1d",
+    ap.add_argument("--mode", choices=("1d", "2d", "rescale", "rescale_ratio"), default="1d",
                     help="1d = sweep sizing only, simulator picks exits via 1R/2R/trail/cut. "
                          "2d = sweep sizing x cut, simulator picks exits. "
-                         "rescale = keep real entries, exits, and cut; only rescale share count by sizing_pct.")
+                         "rescale = keep real entries/exits/cut; rescale shares by sizing_pct of deep stop. "
+                         "rescale_ratio = keep real entries/exits/cut; rescale shares by ratio = (cut-sizing)/(entry-cut).")
     ap.add_argument("--sizing", type=float, default=None,
                     help="Run a single sizing_pct (skip the autoresearch loop).")
     ap.add_argument("--cut", type=float, default=None,
@@ -843,6 +1035,8 @@ def main():
     raw_trades, ohlc = load_inputs()
     if args.mode == "rescale":
         trades, skip_stats = filter_enriched(raw_trades, ohlc, require_cut=False, require_qty_pnl=True)
+    elif args.mode == "rescale_ratio":
+        trades, skip_stats = filter_enriched(raw_trades, ohlc, require_cut=True, require_qty_pnl=True)
     else:
         trades, skip_stats = filter_enriched(raw_trades, ohlc, require_cut=True, require_qty_pnl=False)
     print(f"[load] {len(trades)} simulatable trades  (skipped: {skip_stats})")
@@ -851,12 +1045,17 @@ def main():
     ema_cache = build_ema_cache(ohlc)
 
     if args.sizing is not None:
-        print(f"[run]  single iteration mode={args.mode} sizing_pct={args.sizing} cut_pct={args.cut}")
+        print(f"[run]  single iteration mode={args.mode} sizing={args.sizing} cut_pct={args.cut}")
         if args.mode == "rescale":
             baseline = run_one_rescale(trades, ohlc, ema_cache, 1.0,
                                        note="baseline (auto-attached)", is_baseline=True, idx=0)
             single = run_one_rescale(trades, ohlc, ema_cache, args.sizing,
                                      note=args.note or f"single rescale s={args.sizing}", idx=1)
+        elif args.mode == "rescale_ratio":
+            baseline = run_one_rescale_ratio(trades, ohlc, ema_cache, 1.0,
+                                             note="baseline (auto-attached)", is_baseline=True, idx=0)
+            single = run_one_rescale_ratio(trades, ohlc, ema_cache, args.sizing,
+                                           note=args.note or f"single ratio r={args.sizing}", idx=1)
         else:
             baseline = run_one(trades, ohlc, ema_cache, 1.0,
                                note="baseline (auto-attached)", is_baseline=True, idx=0)
@@ -869,6 +1068,12 @@ def main():
         print(f"[run]  rescale autoresearch sweep: {args.iters} iters, range [{args.lo}, {args.hi}]")
         runs = autoresearch_rescale(trades, ohlc, ema_cache, args.iters,
                                     lo=args.lo, hi=args.hi, seed=args.seed)
+    elif args.mode == "rescale_ratio":
+        rlo = args.lo if args.lo != 0.10 else 0.0
+        rhi = args.hi if args.hi != 1.50 else 2.0
+        print(f"[run]  rescale_ratio autoresearch sweep: {args.iters} iters, ratio range [{rlo}, {rhi}]")
+        runs = autoresearch_rescale_ratio(trades, ohlc, ema_cache, args.iters,
+                                          lo=rlo, hi=rhi, seed=args.seed)
     elif args.mode == "2d":
         print(f"[run]  2D autoresearch: {args.iters} iters, "
               f"sizing [{args.lo}, {args.hi}] x cut [{args.cut_lo}, {args.cut_hi}], "
@@ -906,7 +1111,9 @@ def main():
     print()
     print(f"[done] wrote {len(runs)} runs to {RUNS_PATH.name} (total runs in file: {len(payload['runs'])})")
     print()
-    print(f"  {'sizing':>8}  {'cut':>6}  {'expR':>8}  {'win%':>6}  {'stops':>6}  {'avgHold':>8}  {'totalPnL':>12}  {'note'}")
+    is_ratio_mode = args.mode == "rescale_ratio"
+    param_label = "ratio" if is_ratio_mode else "sizing"
+    print(f"  {param_label:>8}  {'cut':>6}  {'expR':>8}  {'win%':>6}  {'stops':>6}  {'avgHold':>8}  {'totalPnL':>12}  {'note'}")
     print(f"  {'-'*8}  {'-'*6}  {'-'*8}  {'-'*6}  {'-'*6}  {'-'*8}  {'-'*12}  {'-'*30}")
     for r in sorted(runs, key=lambda x: x["aggregate"]["expectancy_R"], reverse=True):
         a = r["aggregate"]
@@ -915,13 +1122,15 @@ def main():
         cut_str = f"{cv:>6.3f}" if cv is not None else f"{'hist':>6}"
         stops_val = a.get("stop_outs")
         stops_str = f"{stops_val:>6d}" if stops_val is not None else f"{'-':>6}"
-        print(f"  {r['params']['sizing_pct']:>8.3f}  {cut_str}  {a['expectancy_R']:>+8.3f}  "
+        pv = r["params"].get("sizing_ratio") if is_ratio_mode else r["params"].get("sizing_pct")
+        print(f"  {pv:>8.3f}  {cut_str}  {a['expectancy_R']:>+8.3f}  "
               f"{a['win_rate']*100:>5.1f}%  {stops_str}  "
               f"{a['avg_holding_days']:>8.2f}  {a['total_pnl']:>12,.0f}  {r['note']}{tag}")
 
     best = max(runs, key=lambda r: r["aggregate"]["expectancy_R"])
+    best_pv = best['params'].get('sizing_ratio') if is_ratio_mode else best['params'].get('sizing_pct')
     print()
-    print(f"[best] sizing_pct={best['params']['sizing_pct']}  "
+    print(f"[best] {param_label}={best_pv}  "
           f"expectancy={best['aggregate']['expectancy_R']:+.3f}R  "
           f"({len(best['notable_shifts'])} notable shifts)")
     for s in best["notable_shifts"]:

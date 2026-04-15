@@ -1268,6 +1268,7 @@ tbody td { padding: 10px 12px; }
 .sizing-tag-base { background: rgba(127, 179, 217, 0.18); color: #7fb3d9; }
 .sizing-tag-best { background: rgba(48, 209, 88, 0.18); color: var(--green-bright); }
 .sizing-tag-mode { background: rgba(229, 187, 118, 0.10); color: var(--primary); border: 1px solid rgba(229, 187, 118, 0.25); }
+.sizing-tag-ratio { background: rgba(175, 130, 220, 0.18); color: #c5a3e8; }
 
 .sizing-stat-cards {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px;
