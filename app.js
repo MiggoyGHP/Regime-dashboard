@@ -1949,6 +1949,7 @@ function renderSizingLab() {
 function _modeLabel(mode) {
   if (mode === 'rescale_ratio') return 'ratio sweep (real exits)';
   if (mode === 'rescale') return 'rescale (real exits)';
+  if (mode === 'ratio_sim_gb') return 'ratio sim (giveback + earnings)';
   if (mode === 'sim_2d') return 'sim 2D (rule exits)';
   if (mode === 'sim_1d') return 'sim 1D (rule exits)';
   return mode || 'unknown';
@@ -1974,12 +1975,14 @@ function renderSizingActiveHeader() {
   let cutHtml;
   if (mode === 'rescale_ratio' || mode === 'rescale') {
     cutHtml = ' &middot; <em>real entries &amp; exits</em>';
+  } else if (mode === 'ratio_sim_gb') {
+    cutHtml = ', cut = <em>historical</em> &middot; <em>giveback + earnings rules</em>';
   } else if (cv != null) {
     cutHtml = `, cut_pct = <strong>${cv.toFixed(3)}</strong>`;
   } else {
     cutHtml = ', cut = <em>historical</em>';
   }
-  const paramLabel = mode === 'rescale_ratio' ? 'sizing_ratio' : 'sizing_pct';
+  const paramLabel = (mode === 'rescale_ratio' || mode === 'ratio_sim_gb') ? 'sizing_ratio' : 'sizing_pct';
   const paramValue = _runParamValue(active);
   idEl.innerHTML = `${paramLabel} = <strong>${paramValue.toFixed(3)}</strong>${cutHtml}`
     + ` <span class="sizing-tag sizing-tag-mode">${_modeLabel(mode)}</span>`
@@ -2048,6 +2051,18 @@ function renderSizingStatCards() {
       delta: null,
     },
   ];
+  if (a.earnings_exits != null) {
+    cards.push({
+      label: 'Earnings exits', value: _fmtIntOrDash(a.earnings_exits),
+      delta: null, isInt: true,
+    });
+  }
+  if (a.giveback_exits != null) {
+    cards.push({
+      label: 'Giveback stops', value: _fmtIntOrDash(a.giveback_exits),
+      delta: null, isInt: true,
+    });
+  }
   const el = document.getElementById('sizing-stat-cards');
   el.innerHTML = cards.map(c => {
     let deltaHtml = '';
@@ -2295,7 +2310,7 @@ function renderSizingHistoryTable() {
       : (r.params.mode === 'rescale' || r.params.mode === 'rescale_ratio' ? '<em>n/a</em>' : '<em>hist</em>');
     const mode = r.params.mode || (r.params.cut_pct != null ? 'sim_2d' : 'sim_1d');
     const paramValue = _runParamValue(r);
-    const isRatio = mode === 'rescale_ratio';
+    const isRatio = mode === 'rescale_ratio' || mode === 'ratio_sim_gb';
     const paramChip = isRatio ? ' <span class="sizing-tag sizing-tag-ratio">ratio</span>' : '';
     const modeChip = ` <span class="sizing-tag sizing-tag-mode">${_modeLabel(mode)}</span>`;
     const stopsCell = a.stop_outs == null
@@ -2634,6 +2649,228 @@ function replaySimulateRescaleRatio(trade, sizingRatio) {
   };
 }
 
+// Bar-by-bar simulator mirroring simulate_sizing.simulate_trade_gb — parameterized
+// by sizing_ratio, with the new exit rules (pre-1R giveback cap, post-1R trailing
+// giveback, 20EMA trail post-2R, earnings blackout one bar before announcement).
+function replaySimulateTradeGB(trade, sizingRatio) {
+  const baseTicker = trade.symbol.split(' ')[0];
+  const bars = OHLC[baseTicker];
+  if (!bars || bars.length === 0) return { ok: false, reason: 'no OHLC' };
+  if (trade.plannedEntry == null || trade.plannedCut == null || trade.riskDollars == null) {
+    return { ok: false, reason: 'missing fields' };
+  }
+  const side = trade.side === 'Buy' ? 1 : -1;
+  const entry = +trade.plannedEntry;
+  const risk = +trade.riskDollars;
+  const cut = +trade.plannedCut;
+  const cutDist = Math.abs(entry - cut);
+  if (cutDist <= 0 || risk <= 0) return { ok: false, reason: 'bad distance' };
+
+  const rPerShare = (1 + sizingRatio) * cutDist;
+  if (rPerShare <= 0) return { ok: false, reason: 'bad ratio' };
+  const shares = risk / rPerShare;
+  const t1 = entry + side * rPerShare;
+  const t2 = entry + side * 2 * rPerShare;
+  const pre1rStop = side > 0
+    ? Math.max(cut, entry - 0.5 * rPerShare)
+    : Math.min(cut, entry + 0.5 * rPerShare);
+
+  const si = _replayFindEntryIdx(bars, trade.entryDate);
+  if (si < 0) return { ok: false, reason: 'entry date not in OHLC' };
+
+  const entryBar = bars[si];
+  let scale = 1.0;
+  if (entryBar.o && entryBar.o > 0) {
+    const rr = entry / entryBar.o;
+    if (rr < 0.83 || rr > 1.2) scale = rr;
+  }
+
+  const calcStart = Math.max(0, si - 80);
+  const calcEnd = Math.min(bars.length, si + REPLAY_LOOKAHEAD + 1);
+  const closes = [];
+  for (let i = calcStart; i < calcEnd; i++) closes.push(bars[i].c);
+  const emaArr = _replayEMA(closes, REPLAY_EMA_PERIOD);
+  const emaAt = (j) => {
+    const idx = j - calcStart;
+    if (idx < 0 || idx >= emaArr.length) return null;
+    return emaArr[idx];
+  };
+
+  // Earliest earnings date >= entryDate
+  const earnings = (DATA && DATA.earningsDates && DATA.earningsDates[baseTicker]) || [];
+  let blackout = null;
+  for (const d of earnings) {
+    if (d >= trade.entryDate) { blackout = d; break; }
+  }
+
+  let state = 'open';
+  let realized = 0;
+  let peakTotal = 0;
+  let exitDate = trade.entryDate;
+  let exitReason = 'time-out';
+  let tranches = 0;
+  const fills = [];
+  let lastIdx = si;
+  const remainingShares = () => state === 'open' ? shares : (state === 'after_1R' ? shares * 0.5 : shares * 0.25);
+
+  const end = Math.min(si + REPLAY_LOOKAHEAD, bars.length);
+  for (let j = si; j < end; j++) {
+    const b = bars[j];
+    const bt = b.t;
+    const h = b.h * scale;
+    const l = b.l * scale;
+    const c = b.c * scale;
+    lastIdx = j;
+
+    // Earnings pre-check
+    if (blackout != null && bt >= blackout) {
+      if (j > si) {
+        const prevC = bars[j - 1].c * scale;
+        const rem = remainingShares();
+        realized += side * (prevC - entry) * rem;
+        fills.push({ date: bars[j - 1].t, price: prevC, qty: rem, label: 'Earnings exit', kind: 'earnings' });
+        exitDate = bars[j - 1].t;
+      } else {
+        exitDate = bt;
+      }
+      exitReason = 'earnings';
+      state = 'closed';
+      break;
+    }
+
+    if (state === 'after_2R') {
+      const stopHit = side > 0 ? l <= cut : h >= cut;
+      if (stopHit) {
+        const rem = shares * 0.25;
+        realized += side * (cut - entry) * rem;
+        fills.push({ date: bt, price: cut, qty: rem, label: 'STOP (trail)', kind: 'stop' });
+        state = 'closed';
+        exitDate = bt;
+        exitReason = 'stop_in_trail';
+        break;
+      }
+      const ema = emaAt(j);
+      if (ema != null) {
+        const e = ema * scale;
+        const exited = side > 0 ? c < e : c > e;
+        if (exited) {
+          const rem = shares * 0.25;
+          realized += side * (c - entry) * rem;
+          fills.push({ date: bt, price: c, qty: rem, label: 'Trail @ 20EMA', kind: 'trail' });
+          state = 'closed';
+          exitDate = bt;
+          exitReason = 'trail_ema20';
+          break;
+        }
+      }
+      continue;
+    }
+
+    if (state === 'open') {
+      const stopHit = side > 0 ? l <= pre1rStop : h >= pre1rStop;
+      if (stopHit) {
+        realized += side * (pre1rStop - entry) * shares;
+        fills.push({ date: bt, price: pre1rStop, qty: shares, label: pre1rStop === cut ? 'STOP' : 'STOP (giveback 0.5R)', kind: 'stop' });
+        state = 'closed';
+        exitDate = bt;
+        exitReason = pre1rStop === cut ? 'stop' : 'stop_giveback';
+        break;
+      }
+      const hit1 = side > 0 ? h >= t1 : l <= t1;
+      if (hit1) {
+        const qty1 = shares * 0.5;
+        realized += side * (t1 - entry) * qty1;
+        fills.push({ date: bt, price: t1, qty: qty1, label: '1/2 @ +1R', kind: 't1' });
+        state = 'after_1R';
+        tranches = 1;
+      }
+      if (state === 'after_1R') {
+        const hit2 = side > 0 ? h >= t2 : l <= t2;
+        if (hit2) {
+          const qty2 = shares * 0.25;
+          realized += side * (t2 - entry) * qty2;
+          fills.push({ date: bt, price: t2, qty: qty2, label: '1/4 @ +2R', kind: 't2' });
+          state = 'after_2R';
+          tranches = 2;
+        } else {
+          const fav = side > 0 ? h : l;
+          const rem = shares * 0.5;
+          const openPnl = side * (fav - entry) * rem;
+          peakTotal = Math.max(peakTotal, realized + openPnl);
+        }
+      }
+      continue;
+    }
+
+    if (state === 'after_1R') {
+      const rem = shares * 0.5;
+      const threshold = peakTotal - 0.25 * risk;
+      const gbStopPrice = entry + side * (threshold - realized) / rem;
+      const stop = side > 0 ? Math.max(cut, gbStopPrice) : Math.min(cut, gbStopPrice);
+      const stopHit = side > 0 ? l <= stop : h >= stop;
+      if (stopHit) {
+        realized += side * (stop - entry) * rem;
+        fills.push({ date: bt, price: stop, qty: rem, label: 'STOP (giveback 0.25R)', kind: 'stop' });
+        state = 'closed';
+        exitDate = bt;
+        exitReason = 'stop_giveback_post1r';
+        break;
+      }
+      const hit2 = side > 0 ? h >= t2 : l <= t2;
+      if (hit2) {
+        const qty2 = shares * 0.25;
+        realized += side * (t2 - entry) * qty2;
+        fills.push({ date: bt, price: t2, qty: qty2, label: '1/4 @ +2R', kind: 't2' });
+        state = 'after_2R';
+        tranches = 2;
+        continue;
+      }
+      const fav = side > 0 ? h : l;
+      const openPnl = side * (fav - entry) * rem;
+      peakTotal = Math.max(peakTotal, realized + openPnl);
+      continue;
+    }
+  }
+
+  if (state !== 'closed') {
+    const bar = bars[lastIdx];
+    const lastClose = bar.c * scale;
+    const rem = remainingShares();
+    realized += side * (lastClose - entry) * rem;
+    fills.push({ date: bar.t, price: lastClose, qty: rem, label: 'Time-out close', kind: 'timeout' });
+    exitDate = bar.t;
+    exitReason = 'time-out';
+  }
+
+  let holdingDays = 0;
+  try {
+    const d0 = new Date(trade.entryDate + 'T00:00:00Z').getTime();
+    const d1 = new Date(exitDate + 'T00:00:00Z').getTime();
+    holdingDays = Math.max(0, Math.round((d1 - d0) / 86400000));
+  } catch (e) {}
+
+  return {
+    ok: true,
+    mode: 'ratio_sim_gb',
+    pnl: realized,
+    r: realized / risk,
+    holdingDays,
+    exitReason,
+    stopped: exitReason === 'stop' || exitReason === 'stop_giveback'
+             || exitReason === 'stop_giveback_post1r' || exitReason === 'stop_in_trail',
+    tranchesFilled: tranches,
+    shares,
+    entry,
+    cut,
+    t1,
+    t2,
+    fills,
+    lastBarDate: exitDate,
+    scale,
+    side,
+  };
+}
+
 function _runMode(run) {
   if (!run || !run.params) return 'sim_1d';
   return run.params.mode || (run.params.cut_pct != null ? 'sim_2d' : 'sim_1d');
@@ -2651,7 +2888,9 @@ function replayMemoSimulate(trade, run) {
   if (replaySimCache.has(k)) return replaySimCache.get(k);
   const mode = _runMode(run);
   let res;
-  if (mode === 'rescale_ratio') {
+  if (mode === 'ratio_sim_gb') {
+    res = replaySimulateTradeGB(trade, run.params.sizing_ratio);
+  } else if (mode === 'rescale_ratio') {
     res = replaySimulateRescaleRatio(trade, run.params.sizing_ratio);
   } else if (mode === 'rescale') {
     res = replaySimulateRescale(trade, run.params.sizing_pct);

@@ -47,7 +47,8 @@ def load_inputs():
     with open(OHLC_PATH, "r", encoding="utf-8") as f:
         ohlc = json.load(f)
     trades = data["regimeTrades"]["regime8"]
-    return trades, ohlc
+    earnings = data.get("earningsDates") or {}
+    return trades, ohlc, earnings
 
 
 def filter_enriched(trades, ohlc, require_cut=True, require_qty_pnl=False):
@@ -649,6 +650,388 @@ def autoresearch_rescale_ratio(trades, ohlc, ema_cache, total_iters, lo=0.0, hi=
     return runs
 
 
+# ------------------------------------------------------------ ratio_sim_gb mode
+# Bar-by-bar simulator parameterized by ratio (not sizing_pct) with the new
+# exit rules:
+#   - Scale 1/2 at +1R
+#   - Scale 1/2 of remaining (= 1/4) at +2R
+#   - Trail remaining 1/4 on 20EMA close after 2R
+#   - Exit all one bar before an earnings announcement
+#   - Pre-1R giveback cap: max open loss = 0.5 x risk$ (tighter of plannedCut and 0.5R)
+#   - Post-1R giveback cap: trail 0.25 x risk$ below peak total P&L
+
+def simulate_trade_gb(trade, sizing_ratio, bars, ema20, earnings_for_symbol):
+    side = 1 if trade["side"] == "Buy" else -1
+    entry = float(trade["plannedEntry"])
+    risk = float(trade["riskDollars"])
+    cut_val = trade.get("plannedCut")
+    if cut_val is None:
+        return None
+    cut = float(cut_val)
+    cut_dist = abs(entry - cut)
+    if cut_dist <= 0 or risk <= 0:
+        return None
+
+    r_per_share = (1.0 + float(sizing_ratio)) * cut_dist
+    if r_per_share <= 0:
+        return None
+
+    shares = risk / r_per_share
+    t1 = entry + side * r_per_share
+    t2 = entry + side * 2 * r_per_share
+
+    # Pre-1R giveback: effective stop is tighter of plannedCut and entry - 0.5R
+    if side > 0:
+        pre1r_stop = max(cut, entry - 0.5 * r_per_share)
+    else:
+        pre1r_stop = min(cut, entry + 0.5 * r_per_share)
+
+    si = find_entry_index(bars, trade["entryDate"])
+    if si is None:
+        return None
+
+    entry_bar = bars[si]
+    if entry_bar["o"] and entry_bar["o"] > 0:
+        scale = entry / entry_bar["o"]
+    else:
+        scale = 1.0
+    if 0.83 <= scale <= 1.2:
+        scale = 1.0
+
+    # Earliest earnings date >= entryDate
+    blackout = None
+    if earnings_for_symbol:
+        entry_date = trade["entryDate"]
+        for d in earnings_for_symbol:
+            if d >= entry_date:
+                blackout = d
+                break
+
+    state = "open"
+    realized = 0.0
+    peak_total = 0.0
+    exit_date = trade["entryDate"]
+    exit_reason = "time-out"
+    tranches = 0
+    last_idx = si
+
+    def remaining_shares():
+        if state == "open":
+            return shares
+        if state == "after_1R":
+            return shares * 0.5
+        return shares * 0.25
+
+    end = min(si + LOOKAHEAD_BARS, len(bars))
+    j = si
+    while j < end:
+        b = bars[j]
+        bt = b["t"]
+        h = b["h"] * scale
+        l = b["l"] * scale
+        c = b["c"] * scale
+        last_idx = j
+
+        # Earnings pre-check: today's bar is on/after blackout → exit at prior close
+        if blackout is not None and bt >= blackout:
+            if j > si:
+                prev_c = bars[j - 1]["c"] * scale
+                rem = remaining_shares()
+                realized += side * (prev_c - entry) * rem
+                exit_date = bars[j - 1]["t"]
+            else:
+                # Entry day already on/after earnings — treat as immediate no-op exit
+                exit_date = bt
+            exit_reason = "earnings"
+            state = "closed"
+            break
+
+        # Trail stage: 20EMA trail + hard cut
+        if state == "after_2R":
+            stop_hit = (l <= cut) if side > 0 else (h >= cut)
+            if stop_hit:
+                rem = shares * 0.25
+                realized += side * (cut - entry) * rem
+                state = "closed"
+                exit_date = bt
+                exit_reason = "stop_in_trail"
+                break
+            ema = ema20[j]
+            if ema is not None:
+                ema_s = ema * scale
+                exited = (c < ema_s) if side > 0 else (c > ema_s)
+                if exited:
+                    rem = shares * 0.25
+                    realized += side * (c - entry) * rem
+                    state = "closed"
+                    exit_date = bt
+                    exit_reason = "trail_ema20"
+                    break
+            j += 1
+            continue
+
+        # Open stage: pre-1R effective stop, then check 1R / 2R
+        if state == "open":
+            stop_hit = (l <= pre1r_stop) if side > 0 else (h >= pre1r_stop)
+            if stop_hit:
+                realized += side * (pre1r_stop - entry) * shares
+                state = "closed"
+                exit_date = bt
+                exit_reason = "stop_giveback" if pre1r_stop != cut else "stop"
+                break
+
+            hit1 = (h >= t1) if side > 0 else (l <= t1)
+            if hit1:
+                qty1 = shares * 0.5
+                realized += side * (t1 - entry) * qty1
+                state = "after_1R"
+                tranches = 1
+
+            if state == "after_1R":
+                hit2 = (h >= t2) if side > 0 else (l <= t2)
+                if hit2:
+                    qty2 = shares * 0.25
+                    realized += side * (t2 - entry) * qty2
+                    state = "after_2R"
+                    tranches = 2
+                else:
+                    # Seed peak using intrabar extreme favorable price
+                    fav = h if side > 0 else l
+                    rem = shares * 0.5
+                    open_pnl = side * (fav - entry) * rem
+                    peak_total = max(peak_total, realized + open_pnl)
+            j += 1
+            continue
+
+        # Post-1R giveback stage
+        if state == "after_1R":
+            rem = shares * 0.5
+            threshold = peak_total - 0.25 * risk
+            # Solve for price level where total_pnl == threshold
+            gb_stop_price = entry + side * (threshold - realized) / rem
+            if side > 0:
+                stop = max(cut, gb_stop_price)
+            else:
+                stop = min(cut, gb_stop_price)
+            stop_hit = (l <= stop) if side > 0 else (h >= stop)
+            if stop_hit:
+                realized += side * (stop - entry) * rem
+                state = "closed"
+                exit_date = bt
+                exit_reason = "stop_giveback_post1r"
+                break
+
+            hit2 = (h >= t2) if side > 0 else (l <= t2)
+            if hit2:
+                qty2 = shares * 0.25
+                realized += side * (t2 - entry) * qty2
+                state = "after_2R"
+                tranches = 2
+                j += 1
+                continue
+
+            # Update peak using intrabar extreme favorable price
+            fav = h if side > 0 else l
+            open_pnl = side * (fav - entry) * rem
+            peak_total = max(peak_total, realized + open_pnl)
+            j += 1
+            continue
+
+    if state != "closed":
+        bar = bars[last_idx]
+        last_close = bar["c"] * scale
+        rem = remaining_shares()
+        realized += side * (last_close - entry) * rem
+        exit_date = bar["t"]
+        exit_reason = "time-out"
+        state = "closed"
+
+    try:
+        d0 = date.fromisoformat(trade["entryDate"])
+        d1 = date.fromisoformat(exit_date)
+        holding = max(0, (d1 - d0).days)
+    except Exception:
+        holding = 0
+
+    stopped = exit_reason in (
+        "stop", "stop_giveback", "stop_giveback_post1r", "stop_in_trail",
+    )
+    return {
+        "pnl": realized,
+        "r": realized / risk,
+        "holding_days": holding,
+        "exit_reason": exit_reason,
+        "stopped": stopped,
+        "tranches_filled": tranches,
+        "shares": shares,
+    }
+
+
+def run_one_ratio_sim(trades, ohlc, ema_cache, earnings, sizing_ratio,
+                      note="", is_baseline=False, idx=0):
+    sims = []
+    skipped = 0
+    for t in trades:
+        bars = ohlc[t["symbol"]]
+        ema = ema_cache[t["symbol"]]
+        sym_earnings = earnings.get(t["symbol"])
+        s = simulate_trade_gb(t, sizing_ratio, bars, ema, sym_earnings)
+        if s is None:
+            skipped += 1
+            continue
+        sims.append((t, s))
+
+    n = len(sims)
+    if n == 0:
+        return None
+
+    pnls = [s["pnl"] for _, s in sims]
+    rs = [s["r"] for _, s in sims]
+    holds = [s["holding_days"] for _, s in sims]
+    wins = [s for _, s in sims if s["pnl"] > 0]
+    stops = sum(1 for _, s in sims if s["stopped"])
+    earnings_exits = sum(1 for _, s in sims if s["exit_reason"] == "earnings")
+    gb_exits = sum(
+        1 for _, s in sims
+        if s["exit_reason"] in ("stop_giveback", "stop_giveback_post1r")
+    )
+    t1_filled = sum(1 for _, s in sims if s["tranches_filled"] >= 1)
+    t2_filled = sum(1 for _, s in sims if s["tranches_filled"] >= 2)
+    gross_win = sum(s["pnl"] for _, s in sims if s["pnl"] > 0)
+    gross_loss = -sum(s["pnl"] for _, s in sims if s["pnl"] < 0)
+
+    aggregate = {
+        "trades_simulated": n,
+        "trades_skipped": skipped,
+        "total_pnl": round(sum(pnls), 2),
+        "expectancy_R": round(sum(rs) / n, 4),
+        "win_rate": round(len(wins) / n, 4),
+        "profit_factor": round(gross_win / gross_loss, 3) if gross_loss > 0 else None,
+        "stop_outs": stops,
+        "stop_out_rate": round(stops / n, 4),
+        "earnings_exits": earnings_exits,
+        "earnings_exit_rate": round(earnings_exits / n, 4),
+        "giveback_exits": gb_exits,
+        "giveback_exit_rate": round(gb_exits / n, 4),
+        "avg_holding_days": round(sum(holds) / n, 2),
+        "tranche_fill_rate_1R": round(t1_filled / n, 4),
+        "tranche_fill_rate_2R": round(t2_filled / n, 4),
+        "avg_shares_per_trade": round(sum(s["shares"] for _, s in sims) / n, 1),
+    }
+
+    by_strat = defaultdict(list)
+    for t, s in sims:
+        key = t.get("primaryStrategy") or "(none)"
+        by_strat[key].append((t, s))
+
+    per_strategy = []
+    for strat, items in sorted(by_strat.items()):
+        m = len(items)
+        rs_s = [s["r"] for _, s in items]
+        wins_s = [s for _, s in items if s["pnl"] > 0]
+        stops_s = sum(1 for _, s in items if s["stopped"])
+        holds_s = [s["holding_days"] for _, s in items]
+        per_strategy.append({
+            "strategy": strat,
+            "trades": m,
+            "expectancy_R": round(sum(rs_s) / m, 4),
+            "win_rate": round(len(wins_s) / m, 4),
+            "stop_outs": stops_s,
+            "avg_holding_days": round(sum(holds_s) / m, 2),
+            "total_pnl": round(sum(s["pnl"] for _, s in items), 2),
+        })
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rid = f"run_{ts}_{idx:03d}"
+    return {
+        "id": rid,
+        "timestamp": ts,
+        "is_baseline": bool(is_baseline),
+        "params": {
+            "sizing_ratio": round(float(sizing_ratio), 4),
+            "mode": "ratio_sim_gb",
+            "rules": "gb_earnings",
+        },
+        "note": note,
+        "aggregate": aggregate,
+        "per_strategy": per_strategy,
+        "deltas_vs_baseline": None,
+        "notable_shifts": [],
+    }
+
+
+def autoresearch_ratio_sim(trades, ohlc, ema_cache, earnings, total_iters,
+                           lo=0.0, hi=2.0, seed=None):
+    """1D ratio sweep with bar-by-bar sim under gb_earnings rules. Baseline ratio = 1.0."""
+    if seed is not None:
+        random.seed(seed)
+    runs = []
+    idx = 0
+
+    baseline = run_one_ratio_sim(
+        trades, ohlc, ema_cache, earnings, 1.0,
+        note="baseline (ratio=1.0, gb+earnings rules)",
+        is_baseline=True, idx=idx,
+    )
+    runs.append(baseline)
+    idx += 1
+
+    coarse_n = max(8, total_iters // 3)
+    coarse_vals = [round(lo + (hi - lo) * i / (coarse_n - 1), 3) for i in range(coarse_n)]
+    for v in coarse_vals:
+        if idx - 1 >= total_iters:
+            break
+        r = run_one_ratio_sim(trades, ohlc, ema_cache, earnings, v,
+                              note=f"coarse pass [{lo}-{hi}]", idx=idx)
+        if r:
+            runs.append(r)
+            idx += 1
+
+    top = sorted(runs[1:], key=lambda r: r["aggregate"]["expectancy_R"], reverse=True)[:3]
+    refine_target = max(0, (total_iters - (idx - 1)) // 2)
+    if refine_target > 0 and top:
+        per_top = max(1, refine_target // len(top))
+        for tr in top:
+            base_v = tr["params"]["sizing_ratio"]
+            for _ in range(per_top):
+                if idx - 1 >= total_iters:
+                    break
+                v = round(clamp(base_v + random.gauss(0, 0.10), 0.0, 5.0), 3)
+                r = run_one_ratio_sim(trades, ohlc, ema_cache, earnings, v,
+                                      note=f"refine around {base_v}", idx=idx)
+                if r:
+                    runs.append(r)
+                    idx += 1
+
+    best = max(runs[1:], key=lambda r: r["aggregate"]["expectancy_R"])
+    best_v = best["params"]["sizing_ratio"]
+    step = 0.05
+    safety = 0
+    while idx - 1 < total_iters and safety < 200:
+        safety += 1
+        improved = False
+        for delta in (-step, +step):
+            if idx - 1 >= total_iters:
+                break
+            v = round(clamp(best_v + delta, 0.0, 5.0), 3)
+            r = run_one_ratio_sim(trades, ohlc, ema_cache, earnings, v,
+                                  note=f"hill-climb step {step:.3f}", idx=idx)
+            if r:
+                runs.append(r)
+                idx += 1
+                if r["aggregate"]["expectancy_R"] > best["aggregate"]["expectancy_R"]:
+                    best = r
+                    best_v = v
+                    improved = True
+        if not improved:
+            step *= 0.5
+            if step < 0.005:
+                break
+
+    attach_deltas(runs, baseline)
+    return runs
+
+
 def run_one(trades, ohlc, ema_cache, sizing_pct, note="", is_baseline=False, idx=0, cut_pct=None):
     sims = []
     skipped = 0
@@ -1010,7 +1393,7 @@ def main():
     ap = argparse.ArgumentParser(description="Sizing autoresearch sweep.")
     ap.add_argument("--iters", type=int, default=80,
                     help="Total simulation iterations (excludes baseline). Default 80.")
-    ap.add_argument("--mode", choices=("1d", "2d", "rescale", "rescale_ratio"), default="1d",
+    ap.add_argument("--mode", choices=("1d", "2d", "rescale", "rescale_ratio", "ratio_sim_gb"), default="1d",
                     help="1d = sweep sizing only, simulator picks exits via 1R/2R/trail/cut. "
                          "2d = sweep sizing x cut, simulator picks exits. "
                          "rescale = keep real entries/exits/cut; rescale shares by sizing_pct of deep stop. "
@@ -1032,11 +1415,13 @@ def main():
     args = ap.parse_args()
 
     print("[load] reading data.json + ohlc.json ...")
-    raw_trades, ohlc = load_inputs()
+    raw_trades, ohlc, earnings = load_inputs()
     if args.mode == "rescale":
         trades, skip_stats = filter_enriched(raw_trades, ohlc, require_cut=False, require_qty_pnl=True)
     elif args.mode == "rescale_ratio":
         trades, skip_stats = filter_enriched(raw_trades, ohlc, require_cut=True, require_qty_pnl=True)
+    elif args.mode == "ratio_sim_gb":
+        trades, skip_stats = filter_enriched(raw_trades, ohlc, require_cut=True, require_qty_pnl=False)
     else:
         trades, skip_stats = filter_enriched(raw_trades, ohlc, require_cut=True, require_qty_pnl=False)
     print(f"[load] {len(trades)} simulatable trades  (skipped: {skip_stats})")
@@ -1056,6 +1441,11 @@ def main():
                                              note="baseline (auto-attached)", is_baseline=True, idx=0)
             single = run_one_rescale_ratio(trades, ohlc, ema_cache, args.sizing,
                                            note=args.note or f"single ratio r={args.sizing}", idx=1)
+        elif args.mode == "ratio_sim_gb":
+            baseline = run_one_ratio_sim(trades, ohlc, ema_cache, earnings, 1.0,
+                                         note="baseline (auto-attached)", is_baseline=True, idx=0)
+            single = run_one_ratio_sim(trades, ohlc, ema_cache, earnings, args.sizing,
+                                       note=args.note or f"single ratio_sim_gb r={args.sizing}", idx=1)
         else:
             baseline = run_one(trades, ohlc, ema_cache, 1.0,
                                note="baseline (auto-attached)", is_baseline=True, idx=0)
@@ -1074,6 +1464,12 @@ def main():
         print(f"[run]  rescale_ratio autoresearch sweep: {args.iters} iters, ratio range [{rlo}, {rhi}]")
         runs = autoresearch_rescale_ratio(trades, ohlc, ema_cache, args.iters,
                                           lo=rlo, hi=rhi, seed=args.seed)
+    elif args.mode == "ratio_sim_gb":
+        rlo = args.lo if args.lo != 0.10 else 0.0
+        rhi = args.hi if args.hi != 1.50 else 2.0
+        print(f"[run]  ratio_sim_gb autoresearch sweep: {args.iters} iters, ratio range [{rlo}, {rhi}]")
+        runs = autoresearch_ratio_sim(trades, ohlc, ema_cache, earnings, args.iters,
+                                      lo=rlo, hi=rhi, seed=args.seed)
     elif args.mode == "2d":
         print(f"[run]  2D autoresearch: {args.iters} iters, "
               f"sizing [{args.lo}, {args.hi}] x cut [{args.cut_lo}, {args.cut_hi}], "
@@ -1111,7 +1507,7 @@ def main():
     print()
     print(f"[done] wrote {len(runs)} runs to {RUNS_PATH.name} (total runs in file: {len(payload['runs'])})")
     print()
-    is_ratio_mode = args.mode == "rescale_ratio"
+    is_ratio_mode = args.mode in ("rescale_ratio", "ratio_sim_gb")
     param_label = "ratio" if is_ratio_mode else "sizing"
     print(f"  {param_label:>8}  {'cut':>6}  {'expR':>8}  {'win%':>6}  {'stops':>6}  {'avgHold':>8}  {'totalPnL':>12}  {'note'}")
     print(f"  {'-'*8}  {'-'*6}  {'-'*8}  {'-'*6}  {'-'*6}  {'-'*8}  {'-'*12}  {'-'*30}")

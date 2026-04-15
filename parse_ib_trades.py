@@ -12,6 +12,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime as _dt
 from typing import Optional
+import pickle
 import openpyxl
 import yfinance as yf
 
@@ -889,6 +890,51 @@ def sync_ohlc_data(trades):
             json.dump(ohlc, f)
         print(f'OHLC sync: added {added} symbols, total now {len(ohlc)}')
 
+def sync_earnings_data(trades):
+    """Fetch historical + upcoming earnings dates for every traded symbol.
+
+    Returns dict: { symbol: ["YYYY-MM-DD", ...] } sorted ascending.
+    Cached to earnings_cache.pkl to avoid re-hitting yfinance on every run.
+    """
+    root = os.path.dirname(os.path.abspath(__file__))
+    cache_path = os.path.join(root, 'earnings_cache.pkl')
+
+    cache = {}
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, 'rb') as f:
+                cache = pickle.load(f)
+        except Exception:
+            cache = {}
+
+    symbols = sorted({t.symbol.split(' ')[0] for t in trades})
+    missing = [s for s in symbols if s not in cache]
+    if missing:
+        print(f'Earnings sync: fetching {len(missing)} symbols')
+        for sym in missing:
+            try:
+                ticker = yf.Ticker(sym)
+                df = ticker.get_earnings_dates(limit=80)
+                if df is None or df.empty:
+                    cache[sym] = []
+                    continue
+                dates = sorted({d.strftime('%Y-%m-%d') for d in df.index})
+                cache[sym] = dates
+                print(f'  {sym}: {len(dates)} earnings dates')
+            except Exception as e:
+                print(f'  {sym}: fetch failed: {e}')
+                cache[sym] = []
+        try:
+            with open(cache_path, 'wb') as f:
+                pickle.dump(cache, f)
+        except Exception as e:
+            print(f'  earnings cache save failed: {e}')
+    else:
+        print(f'Earnings sync: all {len(symbols)} symbols cached')
+
+    return {s: cache.get(s, []) for s in symbols}
+
+
 # ── Regime Stats ──────────────────────────────────────────────────────────────
 
 def compute_regime_stats(regime_trades):
@@ -1022,6 +1068,10 @@ def main():
     print('\nSyncing OHLC data...')
     sync_ohlc_data(closed)
 
+    # 5d. Sync earnings dates for all traded symbols
+    print('\nSyncing earnings dates...')
+    earnings_dates = sync_earnings_data(closed)
+
     # 6. Compute regime stats
     regime_stats = compute_regime_stats(regime_trades)
 
@@ -1055,6 +1105,7 @@ def main():
         'regimeStats': regime_stats,
         'regimePeriods': regime_periods,
         'overlays': overlays,
+        'earningsDates': earnings_dates,
     }
 
     with open('data.json', 'w') as f:
