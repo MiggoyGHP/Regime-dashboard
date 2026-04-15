@@ -440,6 +440,11 @@ function applyTagEdit(tradeId, field, value) {
 // --- Sizing Lab state ---
 let SIZING_RUNS = null;            // { runs: [...] } loaded from sizing_runs.json
 let sizingActiveRunId = null;
+// When set to a mode string, all sizing renderers constrain themselves to that
+// mode only. null = show everything (legacy Sizing Lab behavior).
+let sizingModeFilter = null;
+// Remembers which row is active per filter so switching tabs preserves selection
+const sizingActiveRunIdByMode = {};
 let sizingStrategySort = { field: 'expectancy_R', dir: -1 };
 let sizingHistorySort = 'expectancy_R';
 let sizingHistoryDedupe = true;
@@ -508,7 +513,9 @@ function switchView(view) {
   if (view === currentView) return;
   currentView = view;
   document.querySelectorAll('.view-tab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
-  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + view));
+  // The "sizing-earn" tab is an alias for the "sizing" view with a mode filter
+  const domView = view === 'sizing-earn' ? 'sizing' : view;
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + domView));
 
   // Resize charts when switching to overview (they may have been in hidden state)
   if (view === 'overview') {
@@ -517,7 +524,14 @@ function switchView(view) {
       if (drawdownChart) drawdownChart.applyOptions({ width: document.getElementById('drawdown-chart').clientWidth });
     }, 20);
   }
-  if (view === 'sizing') {
+  if (view === 'sizing' || view === 'sizing-earn') {
+    sizingModeFilter = view === 'sizing-earn' ? 'ratio_sim_earn' : null;
+    const titleEl = document.getElementById('sizing-lab-title');
+    if (titleEl) {
+      titleEl.textContent = view === 'sizing-earn'
+        ? 'Sizing Optimization Lab — No Giveback'
+        : 'Sizing Optimization Lab';
+    }
     renderSizingLab();
   }
   if (view === 'replay') {
@@ -1865,12 +1879,12 @@ function setupSizingLab() {
   const showBest = document.getElementById('sizing-show-best');
   if (showBest) showBest.addEventListener('click', () => {
     const best = sizingBestRun();
-    if (best) { sizingActiveRunId = best.id; renderSizingLab(); }
+    if (best) { _setSizingActiveRunId(best.id); renderSizingLab(); }
   });
   const showBaseline = document.getElementById('sizing-show-baseline');
   if (showBaseline) showBaseline.addEventListener('click', () => {
     const b = sizingBaselineRun();
-    if (b) { sizingActiveRunId = b.id; renderSizingLab(); }
+    if (b) { _setSizingActiveRunId(b.id); renderSizingLab(); }
   });
   // Sortable per-strategy table
   document.querySelectorAll('.sizing-strategy-table th[data-sort]').forEach(th => {
@@ -1896,27 +1910,46 @@ function setupSizingLab() {
   }
 }
 
+function _sizingFilteredRuns() {
+  const runs = (SIZING_RUNS && SIZING_RUNS.runs) || [];
+  if (!sizingModeFilter) return runs;
+  return runs.filter(r => (r.params && r.params.mode) === sizingModeFilter);
+}
+
 function sizingBaselineRun() {
-  if (!SIZING_RUNS || !SIZING_RUNS.runs) return null;
-  return SIZING_RUNS.runs.find(r => r.is_baseline) || null;
+  const runs = _sizingFilteredRuns();
+  return runs.find(r => r.is_baseline) || null;
 }
 
 function sizingBestRun() {
-  if (!SIZING_RUNS || !SIZING_RUNS.runs || SIZING_RUNS.runs.length === 0) return null;
+  const runs = _sizingFilteredRuns();
+  if (runs.length === 0) return null;
   let best = null;
-  for (const r of SIZING_RUNS.runs) {
+  for (const r of runs) {
     if (best == null || r.aggregate.expectancy_R > best.aggregate.expectancy_R) best = r;
   }
   return best;
 }
 
 function sizingActiveRun() {
-  if (!SIZING_RUNS || !SIZING_RUNS.runs || SIZING_RUNS.runs.length === 0) return null;
-  if (sizingActiveRunId) {
-    const found = SIZING_RUNS.runs.find(r => r.id === sizingActiveRunId);
+  const runs = _sizingFilteredRuns();
+  if (runs.length === 0) return null;
+  const activeId = sizingModeFilter
+    ? sizingActiveRunIdByMode[sizingModeFilter]
+    : sizingActiveRunId;
+  if (activeId) {
+    const found = runs.find(r => r.id === activeId);
     if (found) return found;
   }
   return sizingBestRun();
+}
+
+function _setSizingActiveRunId(id) {
+  if (sizingModeFilter) {
+    sizingActiveRunIdByMode[sizingModeFilter] = id;
+  } else {
+    sizingActiveRunId = id;
+  }
 }
 
 function renderSizingLab() {
@@ -1931,10 +1964,13 @@ function renderSizingLab() {
   if (empty) empty.style.display = 'none';
   if (content) content.style.display = '';
 
-  // Default the active run to the best the first time we render
-  if (!sizingActiveRunId) {
+  // Default the active run to the best the first time we render this filter
+  const _curActive = sizingModeFilter
+    ? sizingActiveRunIdByMode[sizingModeFilter]
+    : sizingActiveRunId;
+  if (!_curActive) {
     const best = sizingBestRun();
-    if (best) sizingActiveRunId = best.id;
+    if (best) _setSizingActiveRunId(best.id);
   }
 
   renderSizingActiveHeader();
@@ -1950,6 +1986,7 @@ function _modeLabel(mode) {
   if (mode === 'rescale_ratio') return 'ratio sweep (real exits)';
   if (mode === 'rescale') return 'rescale (real exits)';
   if (mode === 'ratio_sim_gb') return 'ratio sim (giveback + earnings)';
+  if (mode === 'ratio_sim_earn') return 'ratio sim (earnings only, no giveback)';
   if (mode === 'sim_2d') return 'sim 2D (rule exits)';
   if (mode === 'sim_1d') return 'sim 1D (rule exits)';
   return mode || 'unknown';
@@ -1977,12 +2014,14 @@ function renderSizingActiveHeader() {
     cutHtml = ' &middot; <em>real entries &amp; exits</em>';
   } else if (mode === 'ratio_sim_gb') {
     cutHtml = ', cut = <em>historical</em> &middot; <em>giveback + earnings rules</em>';
+  } else if (mode === 'ratio_sim_earn') {
+    cutHtml = ', cut = <em>historical</em> &middot; <em>earnings only, no giveback</em>';
   } else if (cv != null) {
     cutHtml = `, cut_pct = <strong>${cv.toFixed(3)}</strong>`;
   } else {
     cutHtml = ', cut = <em>historical</em>';
   }
-  const paramLabel = (mode === 'rescale_ratio' || mode === 'ratio_sim_gb') ? 'sizing_ratio' : 'sizing_pct';
+  const paramLabel = (mode === 'rescale_ratio' || mode === 'ratio_sim_gb' || mode === 'ratio_sim_earn') ? 'sizing_ratio' : 'sizing_pct';
   const paramValue = _runParamValue(active);
   idEl.innerHTML = `${paramLabel} = <strong>${paramValue.toFixed(3)}</strong>${cutHtml}`
     + ` <span class="sizing-tag sizing-tag-mode">${_modeLabel(mode)}</span>`
@@ -2155,7 +2194,9 @@ function renderSizingHeatmap() {
   }
 
   const baseline = sizingBaselineRun();
-  const activeId = sizingActiveRunId;
+  const activeId = sizingModeFilter
+    ? sizingActiveRunIdByMode[sizingModeFilter]
+    : sizingActiveRunId;
 
   // Rows = sizing high to low, columns = cut low to high
   const sRows = sAxis.slice().reverse();
@@ -2187,7 +2228,7 @@ function renderSizingHeatmap() {
   // Click to load
   host.querySelectorAll('td.sizing-heatmap-cell').forEach(td => {
     td.addEventListener('click', () => {
-      sizingActiveRunId = td.dataset.runId;
+      _setSizingActiveRunId(td.dataset.runId);
       renderSizingActiveHeader();
       renderSizingStatCards();
       renderSizingNotable();
@@ -2263,7 +2304,7 @@ function renderSizingStrategyTable() {
 
 function renderSizingHistoryTable() {
   const tbody = document.getElementById('sizing-history-tbody');
-  let runs = ((SIZING_RUNS && SIZING_RUNS.runs) || []).slice();
+  let runs = _sizingFilteredRuns().slice();
   if (runs.length === 0) { tbody.innerHTML = ''; return; }
   if (sizingHistoryDedupe) {
     const seen = new Map();
@@ -2298,7 +2339,10 @@ function renderSizingHistoryTable() {
   tbody.innerHTML = runs.map(r => {
     const a = r.aggregate;
     const d = r.deltas_vs_baseline || {};
-    const isActive = sizingActiveRunId === r.id;
+    const _curActiveId = sizingModeFilter
+      ? sizingActiveRunIdByMode[sizingModeFilter]
+      : sizingActiveRunId;
+    const isActive = _curActiveId === r.id;
     const isBest = a.expectancy_R === bestExp;
     const isBase = baseline && r.id === baseline.id;
     let cls = '';
@@ -2310,7 +2354,7 @@ function renderSizingHistoryTable() {
       : (r.params.mode === 'rescale' || r.params.mode === 'rescale_ratio' ? '<em>n/a</em>' : '<em>hist</em>');
     const mode = r.params.mode || (r.params.cut_pct != null ? 'sim_2d' : 'sim_1d');
     const paramValue = _runParamValue(r);
-    const isRatio = mode === 'rescale_ratio' || mode === 'ratio_sim_gb';
+    const isRatio = mode === 'rescale_ratio' || mode === 'ratio_sim_gb' || mode === 'ratio_sim_earn';
     const paramChip = isRatio ? ' <span class="sizing-tag sizing-tag-ratio">ratio</span>' : '';
     const modeChip = ` <span class="sizing-tag sizing-tag-mode">${_modeLabel(mode)}</span>`;
     const stopsCell = a.stop_outs == null
@@ -2338,7 +2382,7 @@ function renderSizingHistoryTable() {
   // Click to load
   tbody.querySelectorAll('tr').forEach(tr => {
     tr.addEventListener('click', () => {
-      sizingActiveRunId = tr.dataset.runId;
+      _setSizingActiveRunId(tr.dataset.runId);
       renderSizingActiveHeader();
       renderSizingStatCards();
       renderSizingNotable();
@@ -2871,6 +2915,188 @@ function replaySimulateTradeGB(trade, sizingRatio) {
   };
 }
 
+// Bar-by-bar simulator mirroring simulate_sizing.simulate_trade_earn — ratio-sized
+// with earnings blackout but NO giveback rules. Hard stop is plannedCut pre-2R,
+// then 20EMA trail.
+function replaySimulateTradeEarn(trade, sizingRatio) {
+  const baseTicker = trade.symbol.split(' ')[0];
+  const bars = OHLC[baseTicker];
+  if (!bars || bars.length === 0) return { ok: false, reason: 'no OHLC' };
+  if (trade.plannedEntry == null || trade.plannedCut == null || trade.riskDollars == null) {
+    return { ok: false, reason: 'missing fields' };
+  }
+  const side = trade.side === 'Buy' ? 1 : -1;
+  const entry = +trade.plannedEntry;
+  const risk = +trade.riskDollars;
+  const cut = +trade.plannedCut;
+  const cutDist = Math.abs(entry - cut);
+  if (cutDist <= 0 || risk <= 0) return { ok: false, reason: 'bad distance' };
+
+  const rPerShare = (1 + sizingRatio) * cutDist;
+  if (rPerShare <= 0) return { ok: false, reason: 'bad ratio' };
+  const shares = risk / rPerShare;
+  const t1 = entry + side * rPerShare;
+  const t2 = entry + side * 2 * rPerShare;
+
+  const si = _replayFindEntryIdx(bars, trade.entryDate);
+  if (si < 0) return { ok: false, reason: 'entry date not in OHLC' };
+
+  const entryBar = bars[si];
+  let scale = 1.0;
+  if (entryBar.o && entryBar.o > 0) {
+    const rr = entry / entryBar.o;
+    if (rr < 0.83 || rr > 1.2) scale = rr;
+  }
+
+  const calcStart = Math.max(0, si - 80);
+  const calcEnd = Math.min(bars.length, si + REPLAY_LOOKAHEAD + 1);
+  const closes = [];
+  for (let i = calcStart; i < calcEnd; i++) closes.push(bars[i].c);
+  const emaArr = _replayEMA(closes, REPLAY_EMA_PERIOD);
+  const emaAt = (j) => {
+    const idx = j - calcStart;
+    if (idx < 0 || idx >= emaArr.length) return null;
+    return emaArr[idx];
+  };
+
+  const earnings = (DATA && DATA.earningsDates && DATA.earningsDates[baseTicker]) || [];
+  let blackout = null;
+  for (const d of earnings) {
+    if (d >= trade.entryDate) { blackout = d; break; }
+  }
+
+  let state = 'open';
+  let realized = 0;
+  let exitDate = trade.entryDate;
+  let exitReason = 'time-out';
+  let tranches = 0;
+  const fills = [];
+  let lastIdx = si;
+  const remainingShares = () => state === 'open' ? shares : (state === 'after_1R' ? shares * 0.5 : shares * 0.25);
+
+  const end = Math.min(si + REPLAY_LOOKAHEAD, bars.length);
+  for (let j = si; j < end; j++) {
+    const b = bars[j];
+    const bt = b.t;
+    const h = b.h * scale;
+    const l = b.l * scale;
+    const c = b.c * scale;
+    lastIdx = j;
+
+    if (blackout != null && bt >= blackout) {
+      if (j > si) {
+        const prevC = bars[j - 1].c * scale;
+        const rem = remainingShares();
+        realized += side * (prevC - entry) * rem;
+        fills.push({ date: bars[j - 1].t, price: prevC, qty: rem, label: 'Earnings exit', kind: 'earnings' });
+        exitDate = bars[j - 1].t;
+      } else {
+        exitDate = bt;
+      }
+      exitReason = 'earnings';
+      state = 'closed';
+      break;
+    }
+
+    if (state === 'after_2R') {
+      const stopHit = side > 0 ? l <= cut : h >= cut;
+      if (stopHit) {
+        const rem = shares * 0.25;
+        realized += side * (cut - entry) * rem;
+        fills.push({ date: bt, price: cut, qty: rem, label: 'STOP (trail)', kind: 'stop' });
+        state = 'closed';
+        exitDate = bt;
+        exitReason = 'stop_in_trail';
+        break;
+      }
+      const ema = emaAt(j);
+      if (ema != null) {
+        const e = ema * scale;
+        const exited = side > 0 ? c < e : c > e;
+        if (exited) {
+          const rem = shares * 0.25;
+          realized += side * (c - entry) * rem;
+          fills.push({ date: bt, price: c, qty: rem, label: 'Trail @ 20EMA', kind: 'trail' });
+          state = 'closed';
+          exitDate = bt;
+          exitReason = 'trail_ema20';
+          break;
+        }
+      }
+      continue;
+    }
+
+    const stopHit = side > 0 ? l <= cut : h >= cut;
+    if (stopHit) {
+      const rem = state === 'open' ? shares : shares * 0.5;
+      realized += side * (cut - entry) * rem;
+      fills.push({ date: bt, price: cut, qty: rem, label: 'STOP', kind: 'stop' });
+      state = 'closed';
+      exitDate = bt;
+      exitReason = 'stop';
+      break;
+    }
+
+    if (state === 'open') {
+      const hit1 = side > 0 ? h >= t1 : l <= t1;
+      if (hit1) {
+        const qty1 = shares * 0.5;
+        realized += side * (t1 - entry) * qty1;
+        fills.push({ date: bt, price: t1, qty: qty1, label: '1/2 @ +1R', kind: 't1' });
+        state = 'after_1R';
+        tranches = 1;
+      }
+    }
+    if (state === 'after_1R') {
+      const hit2 = side > 0 ? h >= t2 : l <= t2;
+      if (hit2) {
+        const qty2 = shares * 0.25;
+        realized += side * (t2 - entry) * qty2;
+        fills.push({ date: bt, price: t2, qty: qty2, label: '1/4 @ +2R', kind: 't2' });
+        state = 'after_2R';
+        tranches = 2;
+      }
+    }
+  }
+
+  if (state !== 'closed') {
+    const bar = bars[lastIdx];
+    const lastClose = bar.c * scale;
+    const rem = remainingShares();
+    realized += side * (lastClose - entry) * rem;
+    fills.push({ date: bar.t, price: lastClose, qty: rem, label: 'Time-out close', kind: 'timeout' });
+    exitDate = bar.t;
+    exitReason = 'time-out';
+  }
+
+  let holdingDays = 0;
+  try {
+    const d0 = new Date(trade.entryDate + 'T00:00:00Z').getTime();
+    const d1 = new Date(exitDate + 'T00:00:00Z').getTime();
+    holdingDays = Math.max(0, Math.round((d1 - d0) / 86400000));
+  } catch (e) {}
+
+  return {
+    ok: true,
+    mode: 'ratio_sim_earn',
+    pnl: realized,
+    r: realized / risk,
+    holdingDays,
+    exitReason,
+    stopped: exitReason === 'stop' || exitReason === 'stop_in_trail',
+    tranchesFilled: tranches,
+    shares,
+    entry,
+    cut,
+    t1,
+    t2,
+    fills,
+    lastBarDate: exitDate,
+    scale,
+    side,
+  };
+}
+
 function _runMode(run) {
   if (!run || !run.params) return 'sim_1d';
   return run.params.mode || (run.params.cut_pct != null ? 'sim_2d' : 'sim_1d');
@@ -2890,6 +3116,8 @@ function replayMemoSimulate(trade, run) {
   let res;
   if (mode === 'ratio_sim_gb') {
     res = replaySimulateTradeGB(trade, run.params.sizing_ratio);
+  } else if (mode === 'ratio_sim_earn') {
+    res = replaySimulateTradeEarn(trade, run.params.sizing_ratio);
   } else if (mode === 'rescale_ratio') {
     res = replaySimulateRescaleRatio(trade, run.params.sizing_ratio);
   } else if (mode === 'rescale') {

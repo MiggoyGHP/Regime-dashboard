@@ -25,6 +25,7 @@
     <button class="view-tab" data-view="analysis">Analysis</button>
     <button class="view-tab" data-view="trades">Trades<span class="tab-badge" id="trades-badge" style="display:none"></span></button>
     <button class="view-tab" data-view="sizing">Sizing Lab<span class="tab-badge" id="sizing-badge" style="display:none"></span></button>
+    <button class="view-tab" data-view="sizing-earn">Sizing Lab (no giveback)</button>
     <button class="view-tab" data-view="replay">Trade Replay<span class="tab-badge" id="replay-badge" style="display:none"></span></button>
   </nav>
 </header>
@@ -153,7 +154,7 @@
   <!-- ===== SIZING LAB VIEW ===== -->
   <div class="view" id="view-sizing">
     <div class="sizing-intro">
-      <h2 class="view-section-title" style="margin-top:0;">Sizing Optimization Lab</h2>
+      <h2 class="view-section-title" style="margin-top:0;" id="sizing-lab-title">Sizing Optimization Lab</h2>
       <p class="sizing-intro-text">
         Replays the enriched trade history under a fixed exit ladder
         (sell &frac12; at +1R, sell &frac12; of the remainder at +2R, trail the final &frac14; on the 20-day EMA, hard stop at <code>plannedCut</code>)
