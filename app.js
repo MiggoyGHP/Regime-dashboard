@@ -1946,6 +1946,13 @@ function renderSizingLab() {
   document.getElementById('sizing-run-count').textContent = runs.length;
 }
 
+function _modeLabel(mode) {
+  if (mode === 'rescale') return 'rescale (real exits)';
+  if (mode === 'sim_2d') return 'sim 2D (rule exits)';
+  if (mode === 'sim_1d') return 'sim 1D (rule exits)';
+  return mode || 'unknown';
+}
+
 function renderSizingActiveHeader() {
   const active = sizingActiveRun();
   if (!active) return;
@@ -1954,20 +1961,30 @@ function renderSizingActiveHeader() {
   const baseline = sizingBaselineRun();
   const isBase = baseline && active.id === baseline.id;
   const cv = active.params.cut_pct;
-  const cutHtml = cv != null
-    ? `, cut_pct = <strong>${cv.toFixed(3)}</strong>`
-    : ', cut = <em>historical</em>';
+  const mode = active.params.mode || (cv != null ? 'sim_2d' : 'sim_1d');
+  let cutHtml;
+  if (mode === 'rescale') {
+    cutHtml = ' &middot; <em>real entries &amp; exits</em>';
+  } else if (cv != null) {
+    cutHtml = `, cut_pct = <strong>${cv.toFixed(3)}</strong>`;
+  } else {
+    cutHtml = ', cut = <em>historical</em>';
+  }
   idEl.innerHTML = `sizing_pct = <strong>${active.params.sizing_pct.toFixed(3)}</strong>${cutHtml}`
-    + (isBase ? '  <span class="sizing-tag sizing-tag-base">baseline</span>' : '');
+    + ` <span class="sizing-tag sizing-tag-mode">${_modeLabel(mode)}</span>`
+    + (isBase ? ' <span class="sizing-tag sizing-tag-base">baseline</span>' : '');
   noteEl.textContent = active.note || '';
 }
 
-function _fmtR(x) { return (x >= 0 ? '+' : '') + x.toFixed(2) + 'R'; }
-function _fmtPct(x) { return (x * 100).toFixed(1) + '%'; }
+function _fmtR(x) { if (x == null) return '—'; return (x >= 0 ? '+' : '') + x.toFixed(2) + 'R'; }
+function _fmtPct(x) { if (x == null) return '—'; return (x * 100).toFixed(1) + '%'; }
 function _fmtMoney(x) {
+  if (x == null) return '—';
   const sign = x < 0 ? '-' : '';
   return sign + '$' + Math.abs(x).toLocaleString('en-US', { maximumFractionDigits: 0 });
 }
+function _fmtIntOrDash(x) { return x == null ? '—' : x.toString(); }
+function _fmtNumOrDash(x, dec) { return x == null ? '—' : x.toFixed(dec); }
 function _deltaCls(d) {
   if (d == null) return '';
   if (d > 0) return 'sizing-delta-pos';
@@ -1996,11 +2013,11 @@ function renderSizingStatCards() {
       delta: d.win_rate != null ? d.win_rate * 100 : null, deltaSuffix: '%',
     },
     {
-      label: 'Stop-outs', value: a.stop_outs.toString(),
+      label: 'Stop-outs', value: _fmtIntOrDash(a.stop_outs),
       delta: d.stop_outs, deltaSuffix: '', isInt: true,
     },
     {
-      label: 'Avg holding (days)', value: a.avg_holding_days.toFixed(1),
+      label: 'Avg holding (days)', value: _fmtNumOrDash(a.avg_holding_days, 1),
       delta: d.avg_holding_days, deltaSuffix: 'd',
     },
     {
@@ -2209,9 +2226,9 @@ function renderSizingStrategyTable() {
       <td>${_fmtR(r.expectancy_R)}</td>
       <td class="${_deltaCls(r.delta_expectancy_R)}">${r.delta_expectancy_R != null ? _signed(r.delta_expectancy_R, 2, 'R') : '—'}</td>
       <td>${_fmtPct(r.win_rate)}</td>
-      <td>${r.stop_outs}</td>
+      <td>${_fmtIntOrDash(r.stop_outs)}</td>
       <td class="${_deltaCls(r.delta_stop_outs)}">${r.delta_stop_outs != null ? _signed(r.delta_stop_outs, 0) : '—'}</td>
-      <td>${r.avg_holding_days.toFixed(1)}</td>
+      <td>${_fmtNumOrDash(r.avg_holding_days, 1)}</td>
       <td class="${_deltaCls(r.delta_avg_holding_days)}">${r.delta_avg_holding_days != null ? _signed(r.delta_avg_holding_days, 1, 'd') : '—'}</td>
       <td>${_fmtMoney(r.total_pnl)}</td>
     </tr>
@@ -2261,15 +2278,25 @@ function renderSizingHistoryTable() {
     if (isActive) cls += ' sizing-row-active';
     if (isBest) cls += ' sizing-row-best';
     if (isBase) cls += ' sizing-row-base';
-    const cutCell = r.params.cut_pct != null ? r.params.cut_pct.toFixed(3) : '<em>hist</em>';
+    const cutCell = r.params.cut_pct != null
+      ? r.params.cut_pct.toFixed(3)
+      : (r.params.mode === 'rescale' ? '<em>n/a</em>' : '<em>hist</em>');
+    const mode = r.params.mode || (r.params.cut_pct != null ? 'sim_2d' : 'sim_1d');
+    const modeChip = ` <span class="sizing-tag sizing-tag-mode">${_modeLabel(mode)}</span>`;
+    const stopsCell = a.stop_outs == null
+      ? '—'
+      : a.stop_outs + (d.stop_outs != null && !isBase ? ` <span class="sizing-mini ${_deltaCls(d.stop_outs)}">(${_signed(d.stop_outs, 0)})</span>` : '');
+    const holdCell = a.avg_holding_days == null
+      ? '—'
+      : a.avg_holding_days.toFixed(1) + (d.avg_holding_days != null && !isBase ? ` <span class="sizing-mini ${_deltaCls(d.avg_holding_days)}">(${_signed(d.avg_holding_days, 1)})</span>` : '');
     return `<tr class="${cls.trim()}" data-run-id="${r.id}">
-      <td>${r.params.sizing_pct.toFixed(3)}${isBase ? ' <span class="sizing-tag sizing-tag-base">base</span>' : ''}${isBest ? ' <span class="sizing-tag sizing-tag-best">best</span>' : ''}</td>
+      <td>${r.params.sizing_pct.toFixed(3)}${isBase ? ' <span class="sizing-tag sizing-tag-base">base</span>' : ''}${isBest ? ' <span class="sizing-tag sizing-tag-best">best</span>' : ''}${modeChip}</td>
       <td>${cutCell}</td>
       <td>${_fmtR(a.expectancy_R)}</td>
       <td class="${_deltaCls(d.expectancy_R)}">${d.expectancy_R != null && !isBase ? _signed(d.expectancy_R, 2, 'R') : '—'}</td>
       <td>${_fmtPct(a.win_rate)}</td>
-      <td>${a.stop_outs}${d.stop_outs != null && !isBase ? ` <span class="sizing-mini ${_deltaCls(d.stop_outs)}">(${_signed(d.stop_outs, 0)})</span>` : ''}</td>
-      <td>${a.avg_holding_days.toFixed(1)}${d.avg_holding_days != null && !isBase ? ` <span class="sizing-mini ${_deltaCls(d.avg_holding_days)}">(${_signed(d.avg_holding_days, 1)})</span>` : ''}</td>
+      <td>${stopsCell}</td>
+      <td>${holdCell}</td>
       <td>${_fmtMoney(a.total_pnl)}</td>
       <td>${_fmtPct(a.tranche_fill_rate_1R)} / ${_fmtPct(a.tranche_fill_rate_2R)}</td>
       <td>${a.avg_shares_per_trade != null ? a.avg_shares_per_trade.toFixed(0) : '—'}</td>

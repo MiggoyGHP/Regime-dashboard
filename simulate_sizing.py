@@ -50,8 +50,12 @@ def load_inputs():
     return trades, ohlc
 
 
-def filter_enriched(trades, ohlc):
-    """Keep only trades the simulator can replay."""
+def filter_enriched(trades, ohlc, require_cut=True, require_qty_pnl=False):
+    """Keep only trades the simulator can replay.
+
+    require_cut: needed for sim modes (1d/2d) which use plannedCut as the hard stop.
+    require_qty_pnl: needed for rescale mode which derives per-share P&L from the trade.
+    """
     out = []
     skipped = {"missing_fields": 0, "missing_ohlc": 0, "bad_distance": 0}
     for t in trades:
@@ -59,8 +63,13 @@ def filter_enriched(trades, ohlc):
             t.get("riskDollars") is None
             or t.get("plannedEntry") is None
             or t.get("plannedStop") is None
-            or t.get("plannedCut") is None
         ):
+            skipped["missing_fields"] += 1
+            continue
+        if require_cut and t.get("plannedCut") is None:
+            skipped["missing_fields"] += 1
+            continue
+        if require_qty_pnl and (not t.get("qty") or t.get("pnl") is None):
             skipped["missing_fields"] += 1
             continue
         if t["symbol"] not in ohlc:
@@ -258,6 +267,197 @@ def simulate_trade(trade, sizing_pct, bars, ema20, cut_pct=None):
 
 # ------------------------------------------------------------ run aggregation
 
+def simulate_trade_rescale(trade, sizing_pct):
+    """
+    Rescale-only mode: keep real entries, exits, holding period, exit reason.
+    Only change the share count to what `sizing_pct` would have produced and
+    rescale the realized P&L (and fees) accordingly.
+
+    new_shares = riskDollars / (sizing_pct * deep_distance)
+    new_pnl    = (actual_pnl_per_share) * new_shares
+    R          = new_pnl / riskDollars
+
+    Returns dict with the same shape used downstream, but exit_reason / stops
+    / tranches don't apply and are not produced.
+    """
+    entry = float(trade.get("plannedEntry") or 0)
+    risk = float(trade.get("riskDollars") or 0)
+    deep_dist = abs(entry - float(trade.get("plannedStop") or 0))
+    actual_qty = float(trade.get("qty") or 0)
+    actual_pnl = float(trade.get("pnl") or 0)
+    if deep_dist <= 0 or risk <= 0 or actual_qty <= 0:
+        return None
+
+    sd = sizing_pct * deep_dist
+    if sd <= 0:
+        return None
+    new_shares = risk / sd
+    per_share_pnl = actual_pnl / actual_qty
+    new_pnl = per_share_pnl * new_shares
+
+    try:
+        d0 = date.fromisoformat(trade["entryDate"])
+        d1 = date.fromisoformat(trade["exitDate"])
+        holding = max(0, (d1 - d0).days)
+    except Exception:
+        holding = 0
+
+    return {
+        "pnl": new_pnl,
+        "r": new_pnl / risk,
+        "holding_days": holding,
+        "shares": new_shares,
+    }
+
+
+def run_one_rescale(trades, ohlc, ema_cache, sizing_pct, note="", is_baseline=False, idx=0):
+    sims = []
+    skipped = 0
+    for t in trades:
+        s = simulate_trade_rescale(t, sizing_pct)
+        if s is None:
+            skipped += 1
+            continue
+        sims.append((t, s))
+
+    n = len(sims)
+    if n == 0:
+        return None
+
+    pnls = [s["pnl"] for _, s in sims]
+    rs = [s["r"] for _, s in sims]
+    holds = [s["holding_days"] for _, s in sims]
+    wins = [s for _, s in sims if s["pnl"] > 0]
+    gross_win = sum(s["pnl"] for _, s in sims if s["pnl"] > 0)
+    gross_loss = -sum(s["pnl"] for _, s in sims if s["pnl"] < 0)
+
+    aggregate = {
+        "trades_simulated": n,
+        "trades_skipped": skipped,
+        "total_pnl": round(sum(pnls), 2),
+        "expectancy_R": round(sum(rs) / n, 4),
+        "win_rate": round(len(wins) / n, 4),
+        "profit_factor": round(gross_win / gross_loss, 3) if gross_loss > 0 else None,
+        # The rescale model does not simulate stops or tranches.
+        "stop_outs": None,
+        "stop_out_rate": None,
+        "avg_holding_days": round(sum(holds) / n, 2),
+        "tranche_fill_rate_1R": None,
+        "tranche_fill_rate_2R": None,
+        "avg_shares_per_trade": round(sum(s["shares"] for _, s in sims) / n, 1),
+    }
+
+    by_strat = defaultdict(list)
+    for t, s in sims:
+        key = t.get("primaryStrategy") or "(none)"
+        by_strat[key].append((t, s))
+
+    per_strategy = []
+    for strat, items in sorted(by_strat.items()):
+        m = len(items)
+        rs_s = [s["r"] for _, s in items]
+        wins_s = [s for _, s in items if s["pnl"] > 0]
+        holds_s = [s["holding_days"] for _, s in items]
+        per_strategy.append({
+            "strategy": strat,
+            "trades": m,
+            "expectancy_R": round(sum(rs_s) / m, 4),
+            "win_rate": round(len(wins_s) / m, 4),
+            "stop_outs": None,
+            "avg_holding_days": round(sum(holds_s) / m, 2),
+            "total_pnl": round(sum(s["pnl"] for _, s in items), 2),
+        })
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rid = f"run_{ts}_{idx:03d}"
+    return {
+        "id": rid,
+        "timestamp": ts,
+        "is_baseline": bool(is_baseline),
+        "params": {
+            "sizing_pct": round(sizing_pct, 4),
+            "cut_pct": None,
+            "mode": "rescale",
+        },
+        "note": note,
+        "aggregate": aggregate,
+        "per_strategy": per_strategy,
+        "deltas_vs_baseline": None,
+        "notable_shifts": [],
+    }
+
+
+def autoresearch_rescale(trades, ohlc, ema_cache, total_iters, lo=0.20, hi=2.00, seed=None):
+    """1D adaptive sweep of sizing_pct for rescale mode."""
+    if seed is not None:
+        random.seed(seed)
+    runs = []
+    idx = 0
+
+    baseline = run_one_rescale(trades, ohlc, ema_cache, 1.0,
+                               note="baseline (size deeply, real exits)",
+                               is_baseline=True, idx=idx)
+    runs.append(baseline)
+    idx += 1
+
+    coarse_n = max(8, total_iters // 3)
+    coarse_vals = [round(lo + (hi - lo) * i / (coarse_n - 1), 3) for i in range(coarse_n)]
+    for v in coarse_vals:
+        if idx - 1 >= total_iters:
+            break
+        r = run_one_rescale(trades, ohlc, ema_cache, v,
+                            note=f"coarse pass [{lo}-{hi}]", idx=idx)
+        if r:
+            runs.append(r)
+            idx += 1
+
+    # Refine top 3
+    top = sorted(runs[1:], key=lambda r: r["aggregate"]["expectancy_R"], reverse=True)[:3]
+    refine_target = max(0, (total_iters - (idx - 1)) // 2)
+    if refine_target > 0 and top:
+        per_top = max(1, refine_target // len(top))
+        for tr in top:
+            base_v = tr["params"]["sizing_pct"]
+            for _ in range(per_top):
+                if idx - 1 >= total_iters:
+                    break
+                v = round(clamp(base_v + random.gauss(0, 0.08), 0.05, 3.0), 3)
+                r = run_one_rescale(trades, ohlc, ema_cache, v,
+                                    note=f"refine around {base_v}", idx=idx)
+                if r:
+                    runs.append(r)
+                    idx += 1
+
+    # Hill climb
+    best = max(runs[1:], key=lambda r: r["aggregate"]["expectancy_R"])
+    best_v = best["params"]["sizing_pct"]
+    step = 0.05
+    safety = 0
+    while idx - 1 < total_iters and safety < 200:
+        safety += 1
+        improved = False
+        for delta in (-step, +step):
+            if idx - 1 >= total_iters:
+                break
+            v = round(clamp(best_v + delta, 0.05, 3.0), 3)
+            r = run_one_rescale(trades, ohlc, ema_cache, v,
+                                note=f"hill-climb step {step:.3f}", idx=idx)
+            if r:
+                runs.append(r)
+                idx += 1
+                if r["aggregate"]["expectancy_R"] > best["aggregate"]["expectancy_R"]:
+                    best = r
+                    best_v = v
+                    improved = True
+        if not improved:
+            step *= 0.5
+            if step < 0.005:
+                break
+
+    attach_deltas(runs, baseline)
+    return runs
+
+
 def run_one(trades, ohlc, ema_cache, sizing_pct, note="", is_baseline=False, idx=0, cut_pct=None):
     sims = []
     skipped = 0
@@ -328,8 +528,10 @@ def run_one(trades, ohlc, ema_cache, sizing_pct, note="", is_baseline=False, idx
     params = {"sizing_pct": round(sizing_pct, 4)}
     if cut_pct is not None:
         params["cut_pct"] = round(cut_pct, 4)
+        params["mode"] = "sim_2d"
     else:
         params["cut_pct"] = None  # historical plannedCut
+        params["mode"] = "sim_1d"
     return {
         "id": rid,
         "timestamp": ts,
@@ -345,6 +547,12 @@ def run_one(trades, ohlc, ema_cache, sizing_pct, note="", is_baseline=False, idx
 
 # ------------------------------------------------------------ deltas
 
+def _sub(a, b, ndigits=None):
+    if a is None or b is None:
+        return None
+    return round(a - b, ndigits) if ndigits is not None else a - b
+
+
 def attach_deltas(runs, baseline):
     b = baseline["aggregate"]
     by_strat_b = {s["strategy"]: s for s in baseline["per_strategy"]}
@@ -357,19 +565,19 @@ def attach_deltas(runs, baseline):
             continue
         a = r["aggregate"]
         r["deltas_vs_baseline"] = {
-            "expectancy_R": round(a["expectancy_R"] - b["expectancy_R"], 4),
-            "stop_outs": a["stop_outs"] - b["stop_outs"],
-            "avg_holding_days": round(a["avg_holding_days"] - b["avg_holding_days"], 2),
-            "total_pnl": round(a["total_pnl"] - b["total_pnl"], 2),
-            "win_rate": round(a["win_rate"] - b["win_rate"], 4),
+            "expectancy_R": _sub(a["expectancy_R"], b["expectancy_R"], 4),
+            "stop_outs": _sub(a.get("stop_outs"), b.get("stop_outs")),
+            "avg_holding_days": _sub(a["avg_holding_days"], b["avg_holding_days"], 2),
+            "total_pnl": _sub(a["total_pnl"], b["total_pnl"], 2),
+            "win_rate": _sub(a["win_rate"], b["win_rate"], 4),
         }
         for s in r["per_strategy"]:
             base = by_strat_b.get(s["strategy"])
             if base:
-                s["delta_expectancy_R"] = round(s["expectancy_R"] - base["expectancy_R"], 4)
-                s["delta_stop_outs"] = s["stop_outs"] - base["stop_outs"]
-                s["delta_avg_holding_days"] = round(s["avg_holding_days"] - base["avg_holding_days"], 2)
-                s["delta_total_pnl"] = round(s["total_pnl"] - base["total_pnl"], 2)
+                s["delta_expectancy_R"] = _sub(s["expectancy_R"], base["expectancy_R"], 4)
+                s["delta_stop_outs"] = _sub(s.get("stop_outs"), base.get("stop_outs"))
+                s["delta_avg_holding_days"] = _sub(s["avg_holding_days"], base["avg_holding_days"], 2)
+                s["delta_total_pnl"] = _sub(s["total_pnl"], base["total_pnl"], 2)
             else:
                 s["delta_expectancy_R"] = None
                 s["delta_stop_outs"] = None
@@ -398,9 +606,9 @@ def attach_deltas(runs, baseline):
             notable.append(
                 f"Avg holding period {verb} by {abs(d['avg_holding_days']):.1f} days fund-wide"
             )
-        if abs(d["stop_outs"]) >= 5:
+        if d.get("stop_outs") is not None and abs(d["stop_outs"]) >= 5:
             verb = "increased" if d["stop_outs"] > 0 else "decreased"
-            pct = (100 * d["stop_outs"] / b["stop_outs"]) if b["stop_outs"] else 0
+            pct = (100 * d["stop_outs"] / b["stop_outs"]) if b.get("stop_outs") else 0
             notable.append(
                 f"Stop-outs {verb} by {abs(d['stop_outs'])} ({pct:+.0f}% from baseline)"
             )
@@ -611,9 +819,10 @@ def main():
     ap = argparse.ArgumentParser(description="Sizing autoresearch sweep.")
     ap.add_argument("--iters", type=int, default=80,
                     help="Total simulation iterations (excludes baseline). Default 80.")
-    ap.add_argument("--mode", choices=("1d", "2d"), default="1d",
-                    help="1d = sweep sizing only (cut fixed at plannedCut). "
-                         "2d = sweep sizing x cut, both as fractions of the deep distance.")
+    ap.add_argument("--mode", choices=("1d", "2d", "rescale"), default="1d",
+                    help="1d = sweep sizing only, simulator picks exits via 1R/2R/trail/cut. "
+                         "2d = sweep sizing x cut, simulator picks exits. "
+                         "rescale = keep real entries, exits, and cut; only rescale share count by sizing_pct.")
     ap.add_argument("--sizing", type=float, default=None,
                     help="Run a single sizing_pct (skip the autoresearch loop).")
     ap.add_argument("--cut", type=float, default=None,
@@ -632,21 +841,34 @@ def main():
 
     print("[load] reading data.json + ohlc.json ...")
     raw_trades, ohlc = load_inputs()
-    trades, skip_stats = filter_enriched(raw_trades, ohlc)
+    if args.mode == "rescale":
+        trades, skip_stats = filter_enriched(raw_trades, ohlc, require_cut=False, require_qty_pnl=True)
+    else:
+        trades, skip_stats = filter_enriched(raw_trades, ohlc, require_cut=True, require_qty_pnl=False)
     print(f"[load] {len(trades)} simulatable trades  (skipped: {skip_stats})")
 
     print("[ema]  precomputing 20EMA per symbol ...")
     ema_cache = build_ema_cache(ohlc)
 
     if args.sizing is not None:
-        print(f"[run]  single iteration sizing_pct={args.sizing} cut_pct={args.cut}")
-        baseline = run_one(trades, ohlc, ema_cache, 1.0,
-                           note="baseline (auto-attached)", is_baseline=True, idx=0)
-        single = run_one(trades, ohlc, ema_cache, args.sizing,
-                         note=args.note or f"single s={args.sizing} c={args.cut}",
-                         idx=1, cut_pct=args.cut)
+        print(f"[run]  single iteration mode={args.mode} sizing_pct={args.sizing} cut_pct={args.cut}")
+        if args.mode == "rescale":
+            baseline = run_one_rescale(trades, ohlc, ema_cache, 1.0,
+                                       note="baseline (auto-attached)", is_baseline=True, idx=0)
+            single = run_one_rescale(trades, ohlc, ema_cache, args.sizing,
+                                     note=args.note or f"single rescale s={args.sizing}", idx=1)
+        else:
+            baseline = run_one(trades, ohlc, ema_cache, 1.0,
+                               note="baseline (auto-attached)", is_baseline=True, idx=0)
+            single = run_one(trades, ohlc, ema_cache, args.sizing,
+                             note=args.note or f"single s={args.sizing} c={args.cut}",
+                             idx=1, cut_pct=args.cut)
         runs = [baseline, single]
         attach_deltas(runs, baseline)
+    elif args.mode == "rescale":
+        print(f"[run]  rescale autoresearch sweep: {args.iters} iters, range [{args.lo}, {args.hi}]")
+        runs = autoresearch_rescale(trades, ohlc, ema_cache, args.iters,
+                                    lo=args.lo, hi=args.hi, seed=args.seed)
     elif args.mode == "2d":
         print(f"[run]  2D autoresearch: {args.iters} iters, "
               f"sizing [{args.lo}, {args.hi}] x cut [{args.cut_lo}, {args.cut_hi}], "
@@ -691,8 +913,10 @@ def main():
         tag = " *baseline*" if r["is_baseline"] else ""
         cv = r["params"].get("cut_pct")
         cut_str = f"{cv:>6.3f}" if cv is not None else f"{'hist':>6}"
+        stops_val = a.get("stop_outs")
+        stops_str = f"{stops_val:>6d}" if stops_val is not None else f"{'-':>6}"
         print(f"  {r['params']['sizing_pct']:>8.3f}  {cut_str}  {a['expectancy_R']:>+8.3f}  "
-              f"{a['win_rate']*100:>5.1f}%  {a['stop_outs']:>6d}  "
+              f"{a['win_rate']*100:>5.1f}%  {stops_str}  "
               f"{a['avg_holding_days']:>8.2f}  {a['total_pnl']:>12,.0f}  {r['note']}{tag}")
 
     best = max(runs, key=lambda r: r["aggregate"]["expectancy_R"])
