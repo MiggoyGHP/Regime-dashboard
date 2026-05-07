@@ -102,13 +102,14 @@ for (const c of REGIME_COLOR_CONFIG) {
   ALL_BAND_CONFIG[c.key] = { top: c.bandRgba, bottom: c.bandRgba };
 }
 
-// GHP Risk Signal (orange flag) — top-stripe overlay config
+// GHP Risk Signal (orange flag) — top-stripe overlay config.
+// Rendered as a thick line series with whitespace gaps on flag-off days,
+// pinned to the top of the chart via a private price scale.
 const RISK_BAND_CONFIG = {
   hex: '#ff8c1a',
-  topColor: 'rgba(255,140,26,0.55)',
-  bottomColor: 'rgba(255,140,26,0)',
-  lineColor: 'rgba(255,140,26,0.85)',
-  scaleMargins: { top: 0, bottom: 0.93 },  // fills top 7% of chart
+  color: 'rgba(255,140,26,0.95)',
+  lineWidth: 6,
+  scaleMargins: { top: 0.005, bottom: 0.97 },
 };
 
 function getRegimeColorConfig() {
@@ -1524,10 +1525,10 @@ function createEquityChart() {
   equityChart.priceScale('regime').applyOptions({
     visible: false, scaleMargins: { top: 0, bottom: 0 },
   });
-  // Orange flag top-stripe overlay (rendered above the G/Y/R bands)
-  equityRiskBandSeries = equityChart.addAreaSeries({
-    lineWidth: 1, lineColor: RISK_BAND_CONFIG.lineColor,
-    topColor: RISK_BAND_CONFIG.topColor, bottomColor: RISK_BAND_CONFIG.bottomColor,
+  // Orange flag top stripe (line series with whitespace gaps on flag-off days)
+  equityRiskBandSeries = equityChart.addLineSeries({
+    color: RISK_BAND_CONFIG.color,
+    lineWidth: RISK_BAND_CONFIG.lineWidth,
     priceScaleId: 'orangeRisk',
     lastValueVisible: false, priceLineVisible: false,
     crosshairMarkerVisible: false,
@@ -1587,7 +1588,9 @@ function isRiskFlagOn(dateStr) {
 }
 
 function buildRiskBandData(dates) {
-  return dates.map(d => ({ time: d, value: isRiskFlagOn(d) ? 1 : 0 }));
+  // Whitespace points (just {time}) on flag-off days break the line so
+  // the orange stripe only renders on flag-on date ranges.
+  return dates.map(d => isRiskFlagOn(d) ? { time: d, value: 1 } : { time: d });
 }
 
 function getEquityCurveData() {
@@ -1626,9 +1629,9 @@ function createDrawdownChart() {
       crosshairMarkerVisible: false,
     });
   }
-  drawdownRiskBandSeries = drawdownChart.addAreaSeries({
-    lineWidth: 1, lineColor: RISK_BAND_CONFIG.lineColor,
-    topColor: RISK_BAND_CONFIG.topColor, bottomColor: RISK_BAND_CONFIG.bottomColor,
+  drawdownRiskBandSeries = drawdownChart.addLineSeries({
+    color: RISK_BAND_CONFIG.color,
+    lineWidth: RISK_BAND_CONFIG.lineWidth,
     priceScaleId: 'orangeRisk',
     lastValueVisible: false, priceLineVisible: false,
     crosshairMarkerVisible: false,
@@ -1856,9 +1859,9 @@ function renderTradeChart(trade) {
     visible: false, scaleMargins: { top: 0, bottom: 0 },
   });
   // Orange-flag top stripe on per-trade chart
-  tradeRiskBandSeries = tradeChart.addAreaSeries({
-    lineWidth: 1, lineColor: RISK_BAND_CONFIG.lineColor,
-    topColor: RISK_BAND_CONFIG.topColor, bottomColor: RISK_BAND_CONFIG.bottomColor,
+  tradeRiskBandSeries = tradeChart.addLineSeries({
+    color: RISK_BAND_CONFIG.color,
+    lineWidth: RISK_BAND_CONFIG.lineWidth,
     priceScaleId: 'tradeOrangeRisk',
     lastValueVisible: false, priceLineVisible: false,
     crosshairMarkerVisible: false,
