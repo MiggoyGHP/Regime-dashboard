@@ -14,12 +14,16 @@ let navList = null; // Array of tradeId values for arrow key navigation
 let equityChart, equityLineSeries, equityBandSeries = {};
 let drawdownBandSeries = {};
 let equityColorState = {};
-let overlayState = { equity: true, spx: false, vix: false, mmth: false };
+let overlayState = { equity: true, spx: false, vix: false, mmth: false, risk: true };
 let overlaySeries = {};
+let equityRiskBandSeries = null;
+let drawdownRiskBandSeries = null;
 let drawdownChart, drawdownSeries;
 let tradeChart, tradeSeries, macdChart;
 let tradeRegimeBandSeries = {};
 let tradeRegimeState = {};
+let tradeRiskBandSeries = null;
+let tradeRiskState = false;
 let tradeEmaSeries = {};
 let macdLineSeries, macdSignalSeries, macdHistSeries;
 let indicatorState = { ema10: false, ema20: false, ema25: false, ema50: false, ema200: false, macd: false };
@@ -31,6 +35,7 @@ let selectedExitColors = null;
 let selectedTypes = null;
 let selectedStrategies = null;
 let selectedTradeTypes = null;
+let selectedRiskFlags = null;
 let dateFrom = '';
 let dateTo = '';
 let currentPage = 1;
@@ -96,6 +101,15 @@ const ALL_BAND_CONFIG = {};
 for (const c of REGIME_COLOR_CONFIG) {
   ALL_BAND_CONFIG[c.key] = { top: c.bandRgba, bottom: c.bandRgba };
 }
+
+// GHP Risk Signal (orange flag) — top-stripe overlay config
+const RISK_BAND_CONFIG = {
+  hex: '#ff8c1a',
+  topColor: 'rgba(255,140,26,0.55)',
+  bottomColor: 'rgba(255,140,26,0)',
+  lineColor: 'rgba(255,140,26,0.85)',
+  scaleMargins: { top: 0, bottom: 0.93 },  // fills top 7% of chart
+};
 
 function getRegimeColorConfig() {
   return REGIME_COLOR_CONFIG;
@@ -431,6 +445,7 @@ function applyTagEdit(tradeId, field, value) {
   }
   saveTagOverride(tradeId, field, value);
   renderRegimeColorCards();
+  renderGhpRiskCards();
   renderStrategyPerformance();
   renderStrategyRegimeHeatmap();
   renderTable();
@@ -483,6 +498,7 @@ function init() {
   selectedTypes = new Set(['Stocks', 'Equity and Index Options']);
   selectedStrategies = new Set([...STRATEGY_VALUES, '(Untagged)']);
   selectedTradeTypes = new Set([...TRADE_TYPE_VALUES, '(Untagged)']);
+  selectedRiskFlags = new Set(['On', 'Off']);
   setupViewTabs();
   setupColorFilter();
   setupIndicatorToggles();
@@ -513,8 +529,9 @@ function switchView(view) {
   if (view === currentView) return;
   currentView = view;
   document.querySelectorAll('.view-tab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
-  // The "sizing-earn" tab is an alias for the "sizing" view with a mode filter
-  const domView = view === 'sizing-earn' ? 'sizing' : view;
+  // The "sizing-earn" and "sizing-zero" tabs are aliases for the "sizing" view
+  // with different mode filters applied.
+  const domView = (view === 'sizing-earn' || view === 'sizing-zero') ? 'sizing' : view;
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + domView));
 
   // Resize charts when switching to overview (they may have been in hidden state)
@@ -524,13 +541,15 @@ function switchView(view) {
       if (drawdownChart) drawdownChart.applyOptions({ width: document.getElementById('drawdown-chart').clientWidth });
     }, 20);
   }
-  if (view === 'sizing' || view === 'sizing-earn') {
-    sizingModeFilter = view === 'sizing-earn' ? 'ratio_sim_earn' : null;
+  if (view === 'sizing' || view === 'sizing-earn' || view === 'sizing-zero') {
+    if (view === 'sizing-earn') sizingModeFilter = 'ratio_sim_earn';
+    else if (view === 'sizing-zero') sizingModeFilter = 'ratio_sim_zero';
+    else sizingModeFilter = null;
     const titleEl = document.getElementById('sizing-lab-title');
     if (titleEl) {
-      titleEl.textContent = view === 'sizing-earn'
-        ? 'Sizing Optimization Lab — No Giveback'
-        : 'Sizing Optimization Lab';
+      if (view === 'sizing-earn') titleEl.textContent = 'Sizing Optimization Lab — No Giveback';
+      else if (view === 'sizing-zero') titleEl.textContent = 'Sizing Optimization Lab — Sizing = Cut';
+      else titleEl.textContent = 'Sizing Optimization Lab';
     }
     renderSizingLab();
   }
@@ -621,6 +640,8 @@ function applyOverlayVisibility() {
   for (const [key, series] of Object.entries(overlaySeries)) {
     if (series) series.applyOptions({ visible: overlayState[key] });
   }
+  if (equityRiskBandSeries) equityRiskBandSeries.applyOptions({ visible: !!overlayState.risk });
+  if (drawdownRiskBandSeries) drawdownRiskBandSeries.applyOptions({ visible: !!overlayState.risk });
 }
 
 function setupTradeRegimeToggles() {
@@ -642,12 +663,25 @@ function setupTradeRegimeToggles() {
     });
     container.appendChild(btn);
   });
+  const riskBtn = document.createElement('div');
+  riskBtn.className = 'indicator-toggle';
+  riskBtn.dataset.tradeRisk = 'true';
+  riskBtn.style.cssText = `color:${RISK_BAND_CONFIG.hex}; border-color:${RISK_BAND_CONFIG.hex}; background:rgba(255,140,26,0.1);`;
+  riskBtn.textContent = 'Risk Flag';
+  riskBtn.title = 'GHP Risk Signal — orange flag overlay';
+  riskBtn.addEventListener('click', () => {
+    tradeRiskState = !tradeRiskState;
+    riskBtn.classList.toggle('active', tradeRiskState);
+    applyTradeRegimeVisibility();
+  });
+  container.appendChild(riskBtn);
 }
 
 function applyTradeRegimeVisibility() {
   for (const [color, series] of Object.entries(tradeRegimeBandSeries)) {
     if (series) series.applyOptions({ visible: tradeRegimeState[color] });
   }
+  if (tradeRiskBandSeries) tradeRiskBandSeries.applyOptions({ visible: !!tradeRiskState });
 }
 
 function applyIndicatorVisibility() {
@@ -775,6 +809,11 @@ function setupTableControls() {
     selectedTradeTypes, s => { selectedTradeTypes = s; currentPage = 1; render(); },
     'All Trade Types', 'Trade Types'
   );
+  setupMultiSelect('riskflag-multi', ['On', 'Off'],
+    v => v === 'On' ? 'Risk flag ON' : 'Risk flag OFF',
+    selectedRiskFlags, s => { selectedRiskFlags = s; currentPage = 1; render(); },
+    'All Risk Flags', 'Risk Flags'
+  );
 
   // Date range filter
   const dateFromEl = document.getElementById('date-from');
@@ -870,6 +909,7 @@ function render() {
   updateFilterBanner();
   renderStatBar();
   renderRegimeColorCards();
+  renderGhpRiskCards();
   renderStrategyPerformance();
   renderStrategyRegimeHeatmap();
   renderEquityChart();
@@ -893,6 +933,7 @@ function allFiltersSelected() {
          selectedTypes.size === 2 &&
          selectedStrategies.size === STRATEGY_VALUES.length + 1 &&
          selectedTradeTypes.size === TRADE_TYPE_VALUES.length + 1 &&
+         (!selectedRiskFlags || selectedRiskFlags.size === 2) &&
          !dateFrom && !dateTo;
 }
 
@@ -909,6 +950,7 @@ function updateFilterBanner() {
   if (selectedTypes.size < 2) parts.push(`${selectedTypes.size}/2 types`);
   if (selectedStrategies.size < STRATEGY_VALUES.length + 1) parts.push(`${selectedStrategies.size}/${STRATEGY_VALUES.length + 1} strategies`);
   if (selectedTradeTypes.size < TRADE_TYPE_VALUES.length + 1) parts.push(`${selectedTradeTypes.size}/${TRADE_TYPE_VALUES.length + 1} trade types`);
+  if (selectedRiskFlags && selectedRiskFlags.size < 2) parts.push(`risk: ${[...selectedRiskFlags].join('+') || 'none'}`);
   if (dateFrom || dateTo) parts.push(`date: ${dateFrom || '...'} to ${dateTo || '...'}`);
   banner.style.display = 'flex';
   banner.className = 'filter-banner';
@@ -924,6 +966,7 @@ function clearAllFilters() {
   selectedTypes = new Set(['Stocks', 'Equity and Index Options']);
   selectedStrategies = new Set([...STRATEGY_VALUES, '(Untagged)']);
   selectedTradeTypes = new Set([...TRADE_TYPE_VALUES, '(Untagged)']);
+  selectedRiskFlags = new Set(['On', 'Off']);
   dateFrom = '';
   dateTo = '';
   currentPage = 1;
@@ -940,6 +983,7 @@ function clearAllFilters() {
     else if (id === 'type-multi-btn') btn.textContent = 'All Types';
     else if (id === 'strategy-multi-btn') btn.textContent = 'All Strategies';
     else if (id === 'tradetype-multi-btn') btn.textContent = 'All Trade Types';
+    else if (id === 'riskflag-multi-btn') btn.textContent = 'All Risk Flags';
   });
   render();
 }
@@ -951,6 +995,7 @@ function getFilteredTrades() {
     selectedTypes.has(t.type) &&
     selectedStrategies.has(t.primaryStrategy || '(Untagged)') &&
     selectedTradeTypes.has(t.tradeType || '(Untagged)') &&
+    (!selectedRiskFlags || selectedRiskFlags.has(t.ghpRiskFlag ? 'On' : 'Off')) &&
     (!dateFrom || t.entryDate >= dateFrom) &&
     (!dateTo || t.entryDate <= dateTo)
   );
@@ -1227,6 +1272,93 @@ function renderRegimeColorCards() {
   document.getElementById('regime-color-cards').innerHTML = html;
 }
 
+// --- GHP Risk Signal Cards (binary + 2x3 cross-tab) ---
+function renderGhpRiskCards() {
+  const container = document.getElementById('ghp-risk-cards');
+  if (!container) return;
+
+  const trades = getFilteredTrades();
+  const onTrades = trades.filter(t => t.ghpRiskFlag === true);
+  const offTrades = trades.filter(t => !t.ghpRiskFlag);
+
+  const periods = (DATA.regimePeriods && DATA.regimePeriods.regimeRisk) || [];
+  let onDays = 0, totalDays = 0;
+  for (const p of periods) {
+    totalDays += p.duration || 0;
+    if (p.color === 'Orange') onDays += p.duration || 0;
+  }
+  const onPct = totalDays > 0 ? (onDays / totalDays * 100) : 0;
+
+  const fmtER = v => v ? v.toFixed(2) : '—';
+  const fmtR = v => v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(2) + 'R';
+  const fmtPct = v => (v * 100).toFixed(1) + '%';
+
+  function renderBinaryCard(label, dotColor, cls, subset) {
+    const s = computeRegimeStats(subset);
+    const totalPnL = s['Total P&L'] || 0;
+    const exp = s['Expectancy'];
+    return `
+      <div class="regime-color-card ${cls}">
+        <div class="color-label">
+          <span class="color-dot" style="background:${dotColor}"></span>
+          ${label}
+        </div>
+        <div class="stats-grid">
+          <div class="mini-stat"><div class="mini-label">Total P&L</div><div class="mini-value ${totalPnL >= 0 ? 'positive' : 'negative'}">${fmtPnL(totalPnL)}</div></div>
+          <div class="mini-stat"><div class="mini-label"># Trades</div><div class="mini-value">${fmt(s['# Trades'])}</div></div>
+          <div class="mini-stat"><div class="mini-label">Win Rate</div><div class="mini-value">${fmtPct(s['Win Rate'])}</div></div>
+          <div class="mini-stat"><div class="mini-label">Avg P&L</div><div class="mini-value ${(s['Avg P&L'] || 0) >= 0 ? 'positive' : 'negative'}">${fmtPnL(s['Avg P&L'] || 0)}</div></div>
+          <div class="mini-stat"><div class="mini-label">Edge Ratio</div><div class="mini-value">${fmtER(s['Edge Ratio'])}</div></div>
+          <div class="mini-stat" title="Van Tharp expectancy in R-multiples (n=${s['R Sample'] || 0})"><div class="mini-label">Expectancy</div><div class="mini-value ${exp == null ? '' : (exp >= 0 ? 'positive' : 'negative')}">${fmtR(exp)}</div></div>
+          <div class="mini-stat"><div class="mini-label">Avg Hold</div><div class="mini-value">${s['Avg Holding Period'] ? s['Avg Holding Period'].toFixed(1) + 'd' : '—'}</div></div>
+          <div class="mini-stat"><div class="mini-label">R Win %</div><div class="mini-value">${s['R Sample'] ? (s['R Win Rate'] * 100).toFixed(0) + '%' : '—'}</div></div>
+        </div>
+      </div>`;
+  }
+
+  const orangeDot = `var(--orange)`;
+  const neutralDot = `var(--text-muted)`;
+  const binaryHtml = `
+    <div class="ghp-risk-binary-row">
+      ${renderBinaryCard(`Risk Flag ON (${onDays}/${totalDays} days, ${onPct.toFixed(1)}%)`, orangeDot, 'orange-card', onTrades)}
+      ${renderBinaryCard(`Risk Flag OFF`, neutralDot, 'none-card', offTrades)}
+    </div>`;
+
+  function renderCell(rowKey, color, subset) {
+    const s = computeRegimeStats(subset);
+    const totalPnL = s['Total P&L'] || 0;
+    const colorEntry = getColorEntry(color);
+    const cls = `ghp-risk-cell flag-${rowKey} cell-${rowKey}-${color.toLowerCase()}`;
+    return `
+      <div class="${cls}">
+        <div class="ghp-cell-header">
+          <span class="color-dot" style="background:${colorEntry.dotCss}"></span>
+          ${color}${rowKey === 'on' ? ' × 🟠' : ''}
+        </div>
+        <div class="ghp-cell-stats">
+          <div class="ghp-cell-stat-label"># Trades</div><div class="ghp-cell-stat-value">${fmt(s['# Trades'])}</div>
+          <div class="ghp-cell-stat-label">Total P&L</div><div class="ghp-cell-stat-value ${totalPnL >= 0 ? 'positive' : 'negative'}">${fmtPnL(totalPnL)}</div>
+          <div class="ghp-cell-stat-label">Win Rate</div><div class="ghp-cell-stat-value">${fmtPct(s['Win Rate'])}</div>
+          <div class="ghp-cell-stat-label">Edge Ratio</div><div class="ghp-cell-stat-value">${fmtER(s['Edge Ratio'])}</div>
+        </div>
+      </div>`;
+  }
+
+  const colors = ['Green', 'Yellow', 'Red'];
+  const onCells = colors.map(c => renderCell('on', c, onTrades.filter(t => t.regimeColor === c))).join('');
+  const offCells = colors.map(c => renderCell('off', c, offTrades.filter(t => t.regimeColor === c))).join('');
+
+  const crosstabHtml = `
+    <div class="ghp-risk-row-label">Orange flag ON · by GHP Overlay regime</div>
+    <div class="ghp-risk-crosstab">${onCells}</div>
+    <div class="ghp-risk-row-label">Orange flag OFF · by GHP Overlay regime</div>
+    <div class="ghp-risk-crosstab">${offCells}</div>`;
+
+  const subtitle = `<div class="ghp-risk-subtitle">Cross-tab compares trades taken with the orange flag on vs off, both standalone and within each GHP Overlay regime cell. Wide gaps in Edge Ratio between ON and OFF rows would support the risk-dept claim that orange days warrant slowing down.</div>`;
+
+  container.innerHTML = subtitle + binaryHtml + crosstabHtml;
+}
+
 // --- Strategy Performance ---
 function renderStrategyPerformance() {
   const trades = getFilteredTrades();
@@ -1322,6 +1454,19 @@ function createEquityChart() {
   equityChart.priceScale('regime').applyOptions({
     visible: false, scaleMargins: { top: 0, bottom: 0 },
   });
+  // Orange flag top-stripe overlay (rendered above the G/Y/R bands)
+  equityRiskBandSeries = equityChart.addAreaSeries({
+    lineWidth: 1, lineColor: RISK_BAND_CONFIG.lineColor,
+    topColor: RISK_BAND_CONFIG.topColor, bottomColor: RISK_BAND_CONFIG.bottomColor,
+    priceScaleId: 'orangeRisk',
+    lastValueVisible: false, priceLineVisible: false,
+    crosshairMarkerVisible: false,
+    visible: !!overlayState.risk,
+  });
+  equityChart.priceScale('orangeRisk').applyOptions({
+    visible: false, scaleMargins: RISK_BAND_CONFIG.scaleMargins,
+    autoScale: false,
+  });
   equityLineSeries = equityChart.addLineSeries({
     color: '#e5bb76', lineWidth: 2,
     lastValueVisible: true, priceLineVisible: false,
@@ -1363,6 +1508,19 @@ function buildRegimeBandData(dates, regimeKey) {
   return bands;
 }
 
+function isRiskFlagOn(dateStr) {
+  const periods = DATA && DATA.regimePeriods && DATA.regimePeriods.regimeRisk;
+  if (!periods) return false;
+  for (const p of periods) {
+    if (p.color === 'Orange' && dateStr >= p.start && dateStr <= p.end) return true;
+  }
+  return false;
+}
+
+function buildRiskBandData(dates) {
+  return dates.map(d => ({ time: d, value: isRiskFlagOn(d) ? 1 : 0 }));
+}
+
 function getEquityCurveData() {
   if (allFiltersSelected()) return DATA.equityCurve;
   return buildEquityCurve(getFilteredTrades());
@@ -1372,9 +1530,13 @@ function renderEquityChart() {
   const ec = getEquityCurveData();
   const regimeKey = 'regime' + currentRegime;
   equityLineSeries.setData(ec.map(e => ({ time: e.date, value: e.cumPnL })));
-  const bands = buildRegimeBandData(ec.map(e => e.date), regimeKey);
+  const dates = ec.map(e => e.date);
+  const bands = buildRegimeBandData(dates, regimeKey);
   for (const color of ALL_BAND_COLORS) {
     if (equityBandSeries[color]) equityBandSeries[color].setData(bands[color]);
+  }
+  if (equityRiskBandSeries) {
+    equityRiskBandSeries.setData(buildRiskBandData(dates));
   }
   const overlays = DATA.overlays || {};
   for (const key of Object.keys(OVERLAY_CONFIG)) {
@@ -1395,6 +1557,18 @@ function createDrawdownChart() {
       crosshairMarkerVisible: false,
     });
   }
+  drawdownRiskBandSeries = drawdownChart.addAreaSeries({
+    lineWidth: 1, lineColor: RISK_BAND_CONFIG.lineColor,
+    topColor: RISK_BAND_CONFIG.topColor, bottomColor: RISK_BAND_CONFIG.bottomColor,
+    priceScaleId: 'orangeRisk',
+    lastValueVisible: false, priceLineVisible: false,
+    crosshairMarkerVisible: false,
+    visible: !!overlayState.risk,
+  });
+  drawdownChart.priceScale('orangeRisk').applyOptions({
+    visible: false, scaleMargins: RISK_BAND_CONFIG.scaleMargins,
+    autoScale: false,
+  });
   drawdownChart.priceScale('regime').applyOptions({
     visible: false, scaleMargins: { top: 0, bottom: 0 },
   });
@@ -1408,9 +1582,13 @@ function renderDrawdownChart() {
   const ec = getEquityCurveData();
   const regimeKey = 'regime' + currentRegime;
   drawdownSeries.setData(ec.map(e => ({ time: e.date, value: e.drawdown })));
-  const bands = buildRegimeBandData(ec.map(e => e.date), regimeKey);
+  const dates = ec.map(e => e.date);
+  const bands = buildRegimeBandData(dates, regimeKey);
   for (const color of ALL_BAND_COLORS) {
     if (drawdownBandSeries[color]) drawdownBandSeries[color].setData(bands[color]);
+  }
+  if (drawdownRiskBandSeries) {
+    drawdownRiskBandSeries.setData(buildRiskBandData(dates));
   }
   drawdownChart.timeScale().fitContent();
 }
@@ -1523,6 +1701,7 @@ function showTradeDetail(tradeId, sourceNavList) {
   const typeLabel = trade.strategy || (isOptions ? 'Options' : trade.type);
   document.getElementById('trade-detail-meta').innerHTML = `
     <span class="trade-meta-item"><span class="dot" style="background:${regimeColorToHex(trade.regimeColor)}"></span> ${trade.regimeColor}</span>
+    ${trade.ghpRiskFlag ? `<span class="trade-meta-item"><span class="dot" style="background:var(--orange)"></span> Risk Flag ON</span>` : ''}
     <span class="trade-meta-item">${trade.entryDate} &rarr; ${trade.exitDate} (${holdDays}d)</span>
     <span class="trade-meta-item">${trade.side} \u00B7 ${typeLabel}</span>
     ${trade.primaryStrategy ? `<span class="trade-meta-item"><span class="strategy-badge ${strategyClass(trade.primaryStrategy)}">${strategyLabel(trade.primaryStrategy)}</span></span>` : ''}
@@ -1608,11 +1787,25 @@ function renderTradeChart(trade) {
   tradeChart.priceScale('tradeRegime').applyOptions({
     visible: false, scaleMargins: { top: 0, bottom: 0 },
   });
+  // Orange-flag top stripe on per-trade chart
+  tradeRiskBandSeries = tradeChart.addAreaSeries({
+    lineWidth: 1, lineColor: RISK_BAND_CONFIG.lineColor,
+    topColor: RISK_BAND_CONFIG.topColor, bottomColor: RISK_BAND_CONFIG.bottomColor,
+    priceScaleId: 'tradeOrangeRisk',
+    lastValueVisible: false, priceLineVisible: false,
+    crosshairMarkerVisible: false,
+    visible: !!tradeRiskState,
+  });
+  tradeChart.priceScale('tradeOrangeRisk').applyOptions({
+    visible: false, scaleMargins: RISK_BAND_CONFIG.scaleMargins,
+    autoScale: false,
+  });
   const tradeDates = candleData.map(d => d.time);
   const tradeRegimeBands = buildRegimeBandData(tradeDates, regimeKey);
   for (const color of ALL_BAND_COLORS) {
     if (tradeRegimeBandSeries[color]) tradeRegimeBandSeries[color].setData(tradeRegimeBands[color]);
   }
+  if (tradeRiskBandSeries) tradeRiskBandSeries.setData(buildRiskBandData(tradeDates));
 
   tradeSeries = tradeChart.addCandlestickSeries({
     upColor: '#30d158', downColor: '#ff453a',
@@ -1987,6 +2180,7 @@ function _modeLabel(mode) {
   if (mode === 'rescale') return 'rescale (real exits)';
   if (mode === 'ratio_sim_gb') return 'ratio sim (giveback + earnings)';
   if (mode === 'ratio_sim_earn') return 'ratio sim (earnings only, no giveback)';
+  if (mode === 'ratio_sim_zero') return 'ratio=0 (sizing = cut)';
   if (mode === 'sim_2d') return 'sim 2D (rule exits)';
   if (mode === 'sim_1d') return 'sim 1D (rule exits)';
   return mode || 'unknown';
@@ -2016,12 +2210,14 @@ function renderSizingActiveHeader() {
     cutHtml = ', cut = <em>historical</em> &middot; <em>giveback + earnings rules</em>';
   } else if (mode === 'ratio_sim_earn') {
     cutHtml = ', cut = <em>historical</em> &middot; <em>earnings only, no giveback</em>';
+  } else if (mode === 'ratio_sim_zero') {
+    cutHtml = ', cut = <em>historical</em> &middot; <em>sizing = cut (ratio 0), earnings only</em>';
   } else if (cv != null) {
     cutHtml = `, cut_pct = <strong>${cv.toFixed(3)}</strong>`;
   } else {
     cutHtml = ', cut = <em>historical</em>';
   }
-  const paramLabel = (mode === 'rescale_ratio' || mode === 'ratio_sim_gb' || mode === 'ratio_sim_earn') ? 'sizing_ratio' : 'sizing_pct';
+  const paramLabel = (mode === 'rescale_ratio' || mode === 'ratio_sim_gb' || mode === 'ratio_sim_earn' || mode === 'ratio_sim_zero') ? 'sizing_ratio' : 'sizing_pct';
   const paramValue = _runParamValue(active);
   idEl.innerHTML = `${paramLabel} = <strong>${paramValue.toFixed(3)}</strong>${cutHtml}`
     + ` <span class="sizing-tag sizing-tag-mode">${_modeLabel(mode)}</span>`
@@ -2354,7 +2550,7 @@ function renderSizingHistoryTable() {
       : (r.params.mode === 'rescale' || r.params.mode === 'rescale_ratio' ? '<em>n/a</em>' : '<em>hist</em>');
     const mode = r.params.mode || (r.params.cut_pct != null ? 'sim_2d' : 'sim_1d');
     const paramValue = _runParamValue(r);
-    const isRatio = mode === 'rescale_ratio' || mode === 'ratio_sim_gb' || mode === 'ratio_sim_earn';
+    const isRatio = mode === 'rescale_ratio' || mode === 'ratio_sim_gb' || mode === 'ratio_sim_earn' || mode === 'ratio_sim_zero';
     const paramChip = isRatio ? ' <span class="sizing-tag sizing-tag-ratio">ratio</span>' : '';
     const modeChip = ` <span class="sizing-tag sizing-tag-mode">${_modeLabel(mode)}</span>`;
     const stopsCell = a.stop_outs == null
@@ -3118,6 +3314,8 @@ function replayMemoSimulate(trade, run) {
     res = replaySimulateTradeGB(trade, run.params.sizing_ratio);
   } else if (mode === 'ratio_sim_earn') {
     res = replaySimulateTradeEarn(trade, run.params.sizing_ratio);
+  } else if (mode === 'ratio_sim_zero') {
+    res = replaySimulateTradeEarn(trade, 0.0);
   } else if (mode === 'rescale_ratio') {
     res = replaySimulateRescaleRatio(trade, run.params.sizing_ratio);
   } else if (mode === 'rescale') {

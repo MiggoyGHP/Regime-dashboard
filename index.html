@@ -26,6 +26,7 @@
     <button class="view-tab" data-view="trades">Trades<span class="tab-badge" id="trades-badge" style="display:none"></span></button>
     <button class="view-tab" data-view="sizing">Sizing Lab<span class="tab-badge" id="sizing-badge" style="display:none"></span></button>
     <button class="view-tab" data-view="sizing-earn">Sizing Lab (no giveback)</button>
+    <button class="view-tab" data-view="sizing-zero">Sizing Lab (cut = sizing)</button>
     <button class="view-tab" data-view="replay">Trade Replay<span class="tab-badge" id="replay-badge" style="display:none"></span></button>
   </nav>
 </header>
@@ -45,6 +46,7 @@
       <div class="indicator-toggles" id="equity-toggles">
         <span class="toggle-label">Regimes:</span>
         <span id="equity-color-toggles"></span>
+        <div class="indicator-toggle active" data-overlay="risk" style="color:#ff8c1a; border-color:#ff8c1a; background:rgba(255,140,26,0.12);" title="GHP Risk Signal — orange flag overlay">Risk Flag</div>
         <div class="toggle-separator"></div>
         <span class="toggle-label">Overlays:</span>
         <div class="indicator-toggle active" data-overlay="equity" style="color:#e5bb76; border-color:#e5bb76; background:rgba(229,187,118,0.12);">Equity</div>
@@ -64,6 +66,10 @@
     <!-- Regime Color Breakdown -->
     <h2 class="view-section-title">Regime Color Breakdown</h2>
     <div class="regime-stats-row" id="regime-color-cards"></div>
+
+    <!-- GHP Risk Signal — orange flag backtest -->
+    <h2 class="view-section-title">GHP Risk Signal &mdash; does the orange flag predict worse trades for us?</h2>
+    <div class="ghp-risk-section" id="ghp-risk-cards"></div>
   </div>
 
   <!-- ===== ANALYSIS VIEW ===== -->
@@ -115,6 +121,10 @@
         <div class="multi-select" id="tradetype-multi">
           <button class="multi-select-btn" id="tradetype-multi-btn">All Trade Types</button>
           <div class="multi-select-panel" id="tradetype-multi-panel" style="display:none"></div>
+        </div>
+        <div class="multi-select" id="riskflag-multi" title="GHP Risk Signal flag at trade entry">
+          <button class="multi-select-btn" id="riskflag-multi-btn">All Risk Flags</button>
+          <div class="multi-select-panel" id="riskflag-multi-panel" style="display:none"></div>
         </div>
         <div class="date-range-filter">
           <input type="date" class="date-input" id="date-from" placeholder="From">

@@ -437,7 +437,22 @@ def get_regime_color(date_str, sorted_periods):
 
 
 def assign_regime_colors(trades, all_regime_periods):
-    """Assign regime colors to trades based on entry date, for each regime definition."""
+    """Assign regime colors to trades based on entry date, for each regime definition.
+
+    Also stamps each trade with `ghpRiskFlag` (bool) derived from the
+    `regimeRisk` periods (Orange = True, anything else = False) so the UI can
+    branch on it without cross-referencing arrays.
+    """
+    risk_periods = sorted(
+        all_regime_periods.get('regimeRisk', []),
+        key=lambda p: p['start'],
+    )
+
+    def is_orange(entry_date):
+        if not risk_periods:
+            return False
+        return get_regime_color(entry_date, risk_periods) == 'Orange'
+
     result = {}
     for regime_key, periods in all_regime_periods.items():
         sorted_periods = sorted(periods, key=lambda p: p['start'])
@@ -461,6 +476,7 @@ def assign_regime_colors(trades, all_regime_periods):
                 'primaryStrategy': '',
                 'tradeType': '',
                 'regimeColor': get_regime_color(t.entry_date, sorted_periods),
+                'ghpRiskFlag': is_orange(t.entry_date),
                 'entryLegs': t.entry_legs,
                 'exitLegs': t.exit_legs,
             }

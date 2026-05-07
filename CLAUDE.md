@@ -25,7 +25,13 @@ Run: `python parse_ib_trades.py`
 
 ### GHP Regime Overlay Computation (`compute_ghp_regime.py`)
 
-Computes regime8 (GHP Overlay) periods by replicating the Pine Script `regime_classifier_v4_1.pine` 8-criterion scorecard. Price Structure (3): SPY close vs 20/50 EMA. Market Breadth (3): MMFI > 50%, MMTH > 50%, 5-day rolling net highs-lows > 0. Volatility (2): VIX < 20, VIX < 50 EMA. Score 6-8 = Green, 3-5 = Yellow, 0-2 = Red. Emergency overrides: VIX > 35 or SPY gap down <= -4% forces Red. Weekly assessment mode (default): score locks on Friday, holds through the week. Uses prior-day values for anti-repaint. Reads SPY from `BATS_SPY, 1D_f9092.csv`, VIX from `TVC_VIX, 1D_90f96.csv`, MMTH from `INDEX_MMTH, 1D_de5f6.csv`, breadth from `COMEX_DL_GC1!, 1D_7152b.csv`.
+Computes both regime8 (GHP Overlay) and regimeRisk (GHP Risk Signal) periods.
+
+**regime8 (GHP Overlay)** — replicates the Pine Script `regime_classifier_v4_1.pine` 8-criterion scorecard. Price Structure (3): SPY close vs 20/50 EMA. Market Breadth (3): MMFI > 50%, MMTH > 50%, 5-day rolling net highs-lows > 0. Volatility (2): VIX < 20, VIX < 50 EMA. Score 6-8 = Green, 3-5 = Yellow, 0-2 = Red. Emergency overrides: VIX > 35 or SPY gap down <= -4% forces Red. Weekly assessment mode (default): score locks on Friday, holds through the week.
+
+**regimeRisk (GHP Risk Signal / orange flag)** — daily 4-criterion risk-on extreme detector. YRHI − YRLO ≥ 75 (+3), MMTW ≥ 55 (+2), MMFI/S5FI ≥ 65 (+2), VIX < 15 (+1). Flag ON when total ≥ 5 (max 8). Daily evaluation, no Friday lock. Two states: `Orange` (flag on) or `None` (flag off).
+
+Both regimes use prior-day close values for anti-repaint. Reads SPY from `BATS_SPY, 1D_f9092.csv`, VIX from `TVC_VIX, 1D_90f96.csv`, MMTH from `INDEX_MMTH, 1D_de5f6.csv`, MMTW from `INDEX_MMTW, 1D_9513e.csv`, breadth from `COMEX_DL_GC1!, 1D_7152b.csv`.
 
 Run: `python compute_ghp_regime.py`
 
@@ -35,9 +41,12 @@ Three-file vanilla frontend. `index.html` holds structure, `app.js` holds all lo
 
 ### Regime Classification
 
-Only one regime method ships: **regime8 (GHP Overlay)** — 8-criterion weekly scorecard (Price Structure + Breadth + Volatility) with emergency overrides. Computed by `compute_ghp_regime.py`. Uses 3 colors: Green / Yellow / Red.
+Two regimes ship together:
 
-Stored in `data.json` under `regimePeriods.regime8`, `regimeTrades.regime8`, `regimeStats.regime8`.
+1. **regime8 (GHP Overlay)** — 8-criterion weekly scorecard (Price Structure + Breadth + Volatility) with emergency overrides. 3 colors: Green / Yellow / Red. This is the primary regime that colors the equity curve background.
+2. **regimeRisk (GHP Risk Signal)** — daily 4-criterion frothy-market detector. Binary: `Orange` (flag on) or `None` (flag off). Rendered as a top-stripe overlay on top of the green/yellow/red bands. Each trade in `regimeTrades.regime8` is also stamped with a `ghpRiskFlag: bool` for filtering and stats.
+
+Both stored under `regimePeriods.<key>`, `regimeTrades.<key>`, `regimeStats.<key>` in `data.json`. Both produced in a single run of `compute_ghp_regime.py`.
 
 ### Data Files
 
@@ -48,6 +57,7 @@ Stored in `data.json` under `regimePeriods.regime8`, `regimeTrades.regime8`, `re
 - `BATS_SPY, 1D_f9092.csv`: SPY daily data with 20EMA/10EMA for `compute_ghp_regime.py`
 - `TVC_VIX, 1D_90f96.csv`: VIX daily data with 200/50/20/10 EMAs for `compute_ghp_regime.py`
 - `INDEX_MMTH, 1D_de5f6.csv`: MMTH daily data with 10/20 EMA for `compute_ghp_regime.py`
+- `INDEX_MMTW, 1D_9513e.csv`: MMTW (Russell 2000 stocks above 50DMA) daily data for `compute_ghp_regime.py`
 - `COMEX_DL_GC1!, 1D_7152b.csv`: Breadth data with YRLO.US, YRHI.US, MMFI columns for `compute_ghp_regime.py`
 - `test_field_names.js`: Test to verify regime stats field names in `data.json` match dashboard expectations
 
@@ -58,6 +68,7 @@ Stored in `data.json` under `regimePeriods.regime8`, `regimeTrades.regime8`, `re
 - Trade uniqueness key is `(symbol, entryDate)`
 - Tag overrides (strategy/trade type edits made in the UI) persist in `localStorage` key `tagOverrides`
 - Charts use TradingView Lightweight Charts API (vendored, not from CDN)
-- Multi-select filters (color, type, strategy, trade type) use checkbox dropdowns; selecting subsets dynamically filters the equity curve and all dashboard stats
-- Regime colors are Green / Yellow / Red only (plus `Unknown` for trades outside any period)
+- Multi-select filters (color, type, strategy, trade type, risk flag) use checkbox dropdowns; selecting subsets dynamically filters the equity curve and all dashboard stats
+- Regime8 colors are Green / Yellow / Red only (plus `Unknown` for trades outside any period). RegimeRisk values are `Orange` / `None`.
 - Date range filter restricts the equity curve and stats to a custom date window
+- The orange-flag overlay is a thin top stripe rendered above the G/Y/R band on the equity, drawdown, and per-trade charts. Toggleable via the "Risk Flag" toggle button.

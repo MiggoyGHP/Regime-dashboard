@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Compute GHP Regime Overlay periods (regime8).
+Compute GHP Regime Overlay (regime8) and GHP Risk Signal (regimeRisk).
 
-Replicates the Pine Script regime_classifier_v4_1.pine 8-criterion scorecard:
+regime8 — 8-criterion weekly scorecard (Green/Yellow/Red):
 
   Price Structure (3):
     C1: SPY close > 20 EMA
@@ -20,18 +20,27 @@ Replicates the Pine Script regime_classifier_v4_1.pine 8-criterion scorecard:
 
   Score 6-8 = Green, 3-5 = Yellow, 0-2 = Red
   Emergency overrides (always daily): VIX > 35 or SPY gap down <= -4% -> Red
-
   Weekly assessment mode (default): score locks on Friday, holds through the week.
-  Uses prior-day close values for anti-repaint (matching Pine close[1]).
+
+regimeRisk — daily 4-criterion risk-on extreme detector ("orange flag"):
+
+    YRHI - YRLO >= 75 : +3 pts
+    MMTW          >= 55 : +2 pts
+    MMFI / S5FI   >= 65 : +2 pts
+    VIX           < 15  : +1 pt
+  Flag ON when total >= 5 (max 8). Daily evaluation, no Friday lock.
+
+Both regimes use prior-day close values for anti-repaint (matching Pine close[1]).
 
 Data sources (TradingView CSV exports):
-  SPY  - BATS_SPY, 1D_f9092.csv  (close col4, EMA20 col5, EMA10 col6; 50EMA computed)
-  VIX  - TVC_VIX, 1D_90f96.csv   (close col4, EMA50 col6)
-  MMTH - INDEX_MMTH, 1D_de5f6.csv (close col4)
-  Breadth - COMEX_DL_GC1!, 1D_7152b.csv (YRLO col5, YRHI col6, MMFI col7)
+  SPY     - BATS_SPY, 1D_f9092.csv      (close col4, EMA20 col5, EMA10 col6; 50EMA computed)
+  VIX     - TVC_VIX, 1D_90f96.csv        (close col4, EMA50 col6)
+  MMTH    - INDEX_MMTH, 1D_de5f6.csv     (close col4)
+  MMTW    - INDEX_MMTW, 1D_9513e.csv     (close col4)  -- Russell 2000 above 50DMA
+  Breadth - COMEX_DL_GC1!, 1D_7152b.csv  (YRLO col5, YRHI col6, MMFI col7)
 
-Generates regime periods and updates data.json with regimePeriods['regime8'],
-regimeTrades['regime8'], and regimeStats['regime8'].
+Updates data.json with regimePeriods, regimeTrades, regimeStats keyed by
+'regime8' and 'regimeRisk'.
 """
 
 import argparse
@@ -46,14 +55,23 @@ DATA_JSON = 'data.json'
 SPY_CSV = 'BATS_SPY, 1D_f9092.csv'
 VIX_CSV = 'TVC_VIX, 1D_90f96.csv'
 MMTH_CSV = 'INDEX_MMTH, 1D_de5f6.csv'
+MMTW_CSV = 'INDEX_MMTW, 1D_9513e.csv'
 BREADTH_CSV = 'COMEX_DL_GC1!, 1D_7152b.csv'
 
 REGIME_START = '2024-01-01'
 REGIME_KEY = 'regime8'
+RISK_KEY = 'regimeRisk'
 
 NH_LOOKBACK = 5       # Rolling sum window for YRHI/YRLO
 EMERGENCY_VIX = 35.0  # VIX spike threshold
 EMERGENCY_GAP = -4.0  # SPY gap down % threshold
+
+# GHP Risk Signal thresholds (Pine Script v6 defaults)
+RISK_NHL_THRESHOLD = 75    # YRHI - YRLO >= 75 -> +3 pts
+RISK_MMTW_THRESHOLD = 55   # MMTW >= 55         -> +2 pts
+RISK_S5FI_THRESHOLD = 65   # MMFI/S5FI >= 65    -> +2 pts
+RISK_VIX_THRESHOLD = 15    # VIX < 15           -> +1 pt
+RISK_FLAG_THRESHOLD = 5    # total >= 5         -> orange flag ON
 
 
 # -- Load CSVs -----------------------------------------------------------------
@@ -139,6 +157,27 @@ def load_mmth_csv(csv_path):
             data[date_str] = close
             count += 1
     print(f'Loaded {count} MMTH days from {csv_path}')
+    return data
+
+
+def load_mmtw_csv(csv_path):
+    """Load MMTW (Russell 2000 above 50-DMA) data from CSV.
+
+    Columns: time,open,high,low,close
+    Returns dict of date_str -> close.
+    """
+    data = {}
+    count = 0
+    with open(csv_path, 'r') as f:
+        reader = csv.reader(f)
+        next(reader)  # skip header
+        for row in reader:
+            ts = int(row[0])
+            date_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%Y-%m-%d')
+            close = float(row[4])
+            data[date_str] = close
+            count += 1
+    print(f'Loaded {count} MMTW days from {csv_path}')
     return data
 
 
@@ -364,6 +403,107 @@ def generate_periods(daily_colors):
     return periods
 
 
+# -- GHP Risk Signal (orange flag) ---------------------------------------------
+
+def classify_risk_signal(spy_rows, vix_data, mmtw_data, breadth_data):
+    """Classify each trading day for the GHP Risk Signal (orange flag).
+
+    Replicates the Pine Script v6 indicator using prior-day values (anti-repaint):
+      - YRHI - YRLO >= 75 : +3
+      - MMTW          >= 55 : +2
+      - MMFI (S5FI)   >= 65 : +2
+      - VIX           < 15  : +1
+    Flag ON when total >= 5 (out of max 8).
+
+    Returns list of (date_str, color, score) tuples starting from REGIME_START.
+    color is 'Orange' when flag is on, 'None' when off.
+    """
+    daily = []
+    for i, (date_str, _spy_open, _spy_close, _spy_ema20) in enumerate(spy_rows):
+        if i == 0:
+            continue
+        if date_str < REGIME_START:
+            continue
+
+        prev_date = spy_rows[i - 1][0]
+
+        if prev_date not in vix_data or prev_date not in mmtw_data \
+                or prev_date not in breadth_data:
+            continue
+
+        prev_vix_close, _ = vix_data[prev_date]
+        prev_mmtw = mmtw_data[prev_date]
+        prev_yrlo, prev_yrhi, prev_mmfi = breadth_data[prev_date]
+        prev_nhl = prev_yrhi - prev_yrlo
+
+        score = 0
+        if prev_nhl >= RISK_NHL_THRESHOLD:
+            score += 3
+        if prev_mmtw >= RISK_MMTW_THRESHOLD:
+            score += 2
+        if prev_mmfi >= RISK_S5FI_THRESHOLD:
+            score += 2
+        if prev_vix_close < RISK_VIX_THRESHOLD:
+            score += 1
+
+        color = 'Orange' if score >= RISK_FLAG_THRESHOLD else 'None'
+        daily.append((date_str, color, score))
+
+    return daily
+
+
+def generate_risk_periods(daily_risk):
+    """Group consecutive same-flag-state trading days into periods.
+
+    Includes both Orange (flag on) and None (flag off) periods so every
+    trading day is covered. Stores max score within each Orange period.
+    """
+    if not daily_risk:
+        return []
+
+    periods = []
+    cur_color = daily_risk[0][1]
+    cur_start = daily_risk[0][0]
+    cur_end = daily_risk[0][0]
+    cur_max_score = daily_risk[0][2]
+
+    for date_str, color, score in daily_risk[1:]:
+        if color == cur_color:
+            cur_end = date_str
+            if score > cur_max_score:
+                cur_max_score = score
+        else:
+            s = datetime.strptime(cur_start, '%Y-%m-%d')
+            e = datetime.strptime(cur_end, '%Y-%m-%d')
+            entry = {
+                'color': cur_color,
+                'start': cur_start,
+                'end': cur_end,
+                'duration': (e - s).days + 1,
+            }
+            if cur_color == 'Orange':
+                entry['maxScore'] = cur_max_score
+            periods.append(entry)
+            cur_color = color
+            cur_start = date_str
+            cur_end = date_str
+            cur_max_score = score
+
+    s = datetime.strptime(cur_start, '%Y-%m-%d')
+    e = datetime.strptime(cur_end, '%Y-%m-%d')
+    entry = {
+        'color': cur_color,
+        'start': cur_start,
+        'end': cur_end,
+        'duration': (e - s).days + 1,
+    }
+    if cur_color == 'Orange':
+        entry['maxScore'] = cur_max_score
+    periods.append(entry)
+
+    return periods
+
+
 # -- Update data.json ----------------------------------------------------------
 
 def get_regime_color(date_str, sorted_periods):
@@ -377,46 +517,25 @@ def get_regime_color(date_str, sorted_periods):
     return 'Unknown'
 
 
-def update_data_json(periods, dry_run=False):
-    """Write regime8 periods, trades, and stats to data.json."""
-    print(f'\n-- Updating data.json --')
+def _classify_trades_for_regime(base_trades, periods, risk_periods=None):
+    """Deep-copy base trades and reassign regimeColor by entryDate.
 
-    with open(DATA_JSON, 'r') as f:
-        data = json.load(f)
-
-    # Print period summary
-    color_counts = defaultdict(int)
-    for p in periods:
-        color_counts[p['color']] += 1
-    print(f'  Generated {len(periods)} periods: '
-          + ', '.join(f'{c}={n}' for c, n in sorted(color_counts.items())))
-
-    if dry_run:
-        print('  DRY RUN -- not writing to data.json')
-        for p in periods:
-            print(f'    {p["color"]:6s}  {p["start"]} -> {p["end"]}  ({p["duration"]}d)')
-        return
-
-    # 1. Set regime periods
-    data['regimePeriods'][REGIME_KEY] = periods
-
-    # 2. Create regime8 trades by copying from regime1 and reclassifying
+    If `risk_periods` is provided, also stamp `ghpRiskFlag: bool` on each
+    trade based on whether entryDate falls in an Orange period.
+    """
     sorted_periods = sorted(periods, key=lambda p: p['start'])
-    regime_trades = copy.deepcopy(data['regimeTrades']['regime1'])
+    sorted_risk = sorted(risk_periods or [], key=lambda p: p['start'])
+    out = copy.deepcopy(base_trades)
+    for t in out:
+        t['regimeColor'] = get_regime_color(t['entryDate'], sorted_periods)
+        if sorted_risk:
+            risk_color = get_regime_color(t['entryDate'], sorted_risk)
+            t['ghpRiskFlag'] = (risk_color == 'Orange')
+    return out
 
-    reclassified = 0
-    for t in regime_trades:
-        new_color = get_regime_color(t['entryDate'], sorted_periods)
-        if t['regimeColor'] != new_color:
-            reclassified += 1
-        t['regimeColor'] = new_color
 
-    data['regimeTrades'][REGIME_KEY] = regime_trades
-
-    unknowns = sum(1 for t in regime_trades if t['regimeColor'] == 'Unknown')
-    print(f'  Classified {len(regime_trades)} trades ({reclassified} reclassified, {unknowns} Unknown)')
-
-    # 3. Compute regime8 stats
+def _compute_color_stats(regime_trades):
+    """Aggregate stats per regimeColor (only Closed trades)."""
     color_groups = defaultdict(list)
     for t in regime_trades:
         if t.get('status') == 'Closed':
@@ -462,13 +581,75 @@ def update_data_json(periods, dry_run=False):
             '# Losers': len(losers),
             'Avg Holding Period': avg_hold,
         }
+    return regime_stats
 
-    data['regimeStats'][REGIME_KEY] = regime_stats
 
-    # Print summary
+def update_data_json(regime8_periods, risk_periods, dry_run=False):
+    """Write regime8 + regimeRisk periods, trades, and stats to data.json."""
+    print(f'\n-- Updating data.json --')
+
+    with open(DATA_JSON, 'r') as f:
+        data = json.load(f)
+
+    # Print period summary for both regimes
+    r8_counts = defaultdict(int)
+    for p in regime8_periods:
+        r8_counts[p['color']] += 1
+    print(f'  regime8: {len(regime8_periods)} periods ('
+          + ', '.join(f'{c}={n}' for c, n in sorted(r8_counts.items())) + ')')
+
+    risk_counts = defaultdict(int)
+    risk_days = defaultdict(int)
+    for p in risk_periods:
+        risk_counts[p['color']] += 1
+        risk_days[p['color']] += p['duration']
+    total_days = sum(risk_days.values()) or 1
+    orange_pct = (risk_days.get('Orange', 0) / total_days) * 100
+    print(f'  regimeRisk: {len(risk_periods)} periods ('
+          + ', '.join(f'{c}={n}' for c, n in sorted(risk_counts.items())) + ')')
+    print(f'    Orange flag ON {risk_days.get("Orange", 0)}/{total_days} days ({orange_pct:.1f}%)')
+
+    if dry_run:
+        print('  DRY RUN -- not writing to data.json')
+        for p in regime8_periods:
+            print(f'    [r8] {p["color"]:6s}  {p["start"]} -> {p["end"]}  ({p["duration"]}d)')
+        for p in risk_periods:
+            extra = f' score={p.get("maxScore", "")}' if p['color'] == 'Orange' else ''
+            print(f'    [rr] {p["color"]:6s}  {p["start"]} -> {p["end"]}  ({p["duration"]}d){extra}')
+        return
+
+    # Reclassify trades for both regime keys, using regime1 as the base trade set.
+    base_trades = data['regimeTrades']['regime1']
+
+    r8_trades = _classify_trades_for_regime(base_trades, regime8_periods, risk_periods)
+    risk_trades = _classify_trades_for_regime(base_trades, risk_periods, risk_periods)
+
+    data['regimePeriods'][REGIME_KEY] = regime8_periods
+    data['regimePeriods'][RISK_KEY] = risk_periods
+    data['regimeTrades'][REGIME_KEY] = r8_trades
+    data['regimeTrades'][RISK_KEY] = risk_trades
+
+    r8_unknowns = sum(1 for t in r8_trades if t['regimeColor'] == 'Unknown')
+    risk_unknowns = sum(1 for t in risk_trades if t['regimeColor'] == 'Unknown')
+    print(f'  regime8 trades: {len(r8_trades)} ({r8_unknowns} Unknown)')
+    print(f'  regimeRisk trades: {len(risk_trades)} ({risk_unknowns} Unknown)')
+
+    r8_stats = _compute_color_stats(r8_trades)
+    risk_stats = _compute_color_stats(risk_trades)
+    data['regimeStats'][REGIME_KEY] = r8_stats
+    data['regimeStats'][RISK_KEY] = risk_stats
+
+    print('  regime8 stats:')
     for color in ['Green', 'Yellow', 'Red', 'Unknown', 'All']:
-        if color in regime_stats:
-            s = regime_stats[color]
+        if color in r8_stats:
+            s = r8_stats[color]
+            print(f'    {color}: {s["# Trades"]} trades, ${s["Total P&L"]:,.2f}, '
+                  f'WR {s["Win Rate"]:.1%}, ER {s["Edge Ratio"]:.2f}')
+
+    print('  regimeRisk stats:')
+    for color in ['Orange', 'None', 'Unknown', 'All']:
+        if color in risk_stats:
+            s = risk_stats[color]
             print(f'    {color}: {s["# Trades"]} trades, ${s["Total P&L"]:,.2f}, '
                   f'WR {s["Win Rate"]:.1%}, ER {s["Edge Ratio"]:.2f}')
 
@@ -494,6 +675,7 @@ def main():
     spy_50ema = compute_spy_50ema(spy_rows)
     vix_data = load_vix_csv(VIX_CSV)
     mmth_data = load_mmth_csv(MMTH_CSV)
+    mmtw_data = load_mmtw_csv(MMTW_CSV)
     breadth_data = load_breadth_csv(BREADTH_CSV)
 
     # 2. Compute rolling net highs-lows
@@ -501,22 +683,31 @@ def main():
     net_hl_data = compute_rolling_net_hl(breadth_data, spy_dates)
     print(f'  Computed rolling {NH_LOOKBACK}-day net H-L ({len(net_hl_data)} values)')
 
-    # 3. Classify each trading day
+    # 3. Classify each trading day for regime8 (GHP Overlay)
     daily_colors = classify_days(spy_rows, spy_50ema, vix_data, mmth_data,
                                  breadth_data, net_hl_data, mode=args.mode)
-    print(f'  Classified {len(daily_colors)} trading days from {REGIME_START} ({args.mode} mode)')
+    print(f'  Classified {len(daily_colors)} trading days for regime8 from {REGIME_START} ({args.mode} mode)')
 
-    # Print color distribution
     color_dist = defaultdict(int)
     for _, c in daily_colors:
         color_dist[c] += 1
-    print(f'  Distribution: ' + ', '.join(f'{c}={n}' for c, n in sorted(color_dist.items())))
+    print(f'  regime8 distribution: ' + ', '.join(f'{c}={n}' for c, n in sorted(color_dist.items())))
 
-    # 4. Generate periods
-    periods = generate_periods(daily_colors)
+    regime8_periods = generate_periods(daily_colors)
+
+    # 4. Classify each trading day for regimeRisk (GHP Risk Signal / orange flag)
+    daily_risk = classify_risk_signal(spy_rows, vix_data, mmtw_data, breadth_data)
+    print(f'  Classified {len(daily_risk)} trading days for regimeRisk from {REGIME_START} (daily mode)')
+
+    risk_dist = defaultdict(int)
+    for _, c, _ in daily_risk:
+        risk_dist[c] += 1
+    print(f'  regimeRisk distribution: ' + ', '.join(f'{c}={n}' for c, n in sorted(risk_dist.items())))
+
+    risk_periods = generate_risk_periods(daily_risk)
 
     # 5. Update data.json
-    update_data_json(periods, dry_run=args.dry_run)
+    update_data_json(regime8_periods, risk_periods, dry_run=args.dry_run)
 
 
 if __name__ == '__main__':

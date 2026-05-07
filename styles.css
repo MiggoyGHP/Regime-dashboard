@@ -44,6 +44,9 @@
   --wyckoff-yellow: #e5bb76;            /* remapped to gold */
   --wyckoff-yellow-bright: #f0cc90;
   --wyckoff-yellow-bg: rgba(229, 187, 118, 0.12);
+  --orange: #ff8c1a;                    /* GHP Risk Signal flag */
+  --orange-bright: #ffa548;
+  --orange-bg: rgba(255, 140, 26, 0.12);
   --unknown: rgba(255, 255, 255, 0.4);
   --unknown-bg: rgba(255, 255, 255, 0.06);
 
@@ -342,6 +345,10 @@ body {
 .regime-color-card.yellow-card:hover { border-color: var(--border-strong); }
 .regime-color-card.unknown-card { border-left-color: var(--unknown); }
 .regime-color-card.unknown-card:hover { border-color: rgba(255,255,255,0.2); }
+.regime-color-card.orange-card { border-left-color: var(--orange); }
+.regime-color-card.orange-card:hover { border-color: rgba(255,140,26,0.35); }
+.regime-color-card.none-card { border-left-color: var(--text-muted); }
+.regime-color-card.none-card:hover { border-color: rgba(255,255,255,0.2); }
 .regime-color-card .color-label {
   font-family: var(--font-heading);
   font-size: 14px;
@@ -963,6 +970,8 @@ tbody td { padding: 10px 12px; }
 .badge-Red { background: var(--red-bg); color: var(--red-bright); border: 1px solid rgba(255,69,58,0.3); }
 .badge-Yellow { background: var(--wyckoff-yellow-bg); color: var(--primary); border: 1px solid var(--border-strong); }
 .badge-Unknown { background: var(--unknown-bg); color: var(--text-dim); border: 1px solid rgba(255,255,255,0.15); }
+.badge-Orange { background: var(--orange-bg); color: var(--orange-bright); border: 1px solid rgba(255,140,26,0.35); }
+.badge-None { background: var(--unknown-bg); color: var(--text-dim); border: 1px solid rgba(255,255,255,0.15); }
 
 /* --- Tag System --- */
 .strategy-badge, .trade-type-badge {
@@ -1452,4 +1461,86 @@ tbody td { padding: 10px 12px; }
 
 @media (max-width: 1100px) {
   .replay-charts { grid-template-columns: 1fr; }
+}
+
+/* --- GHP Risk Signal — orange flag panel --- */
+.ghp-risk-section {
+  margin-top: var(--space-lg);
+  margin-bottom: var(--space-lg);
+}
+.ghp-risk-section .ghp-risk-subtitle {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: -4px 0 var(--space-md) 0;
+  letter-spacing: 0.01em;
+}
+.ghp-risk-binary-row {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+.ghp-risk-crosstab {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-sm);
+}
+.ghp-risk-crosstab-row {
+  display: contents;
+}
+.ghp-risk-cell {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-left: 3px solid;
+}
+.ghp-risk-cell .ghp-cell-header {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.ghp-risk-cell .ghp-cell-header .color-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+}
+.ghp-risk-cell .ghp-cell-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 10px;
+}
+.ghp-risk-cell .ghp-cell-stat-label {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.ghp-risk-cell .ghp-cell-stat-value {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--foreground);
+  text-align: right;
+}
+.ghp-risk-cell.cell-on-green   { border-left-color: var(--green); }
+.ghp-risk-cell.cell-on-yellow  { border-left-color: var(--primary); }
+.ghp-risk-cell.cell-on-red     { border-left-color: var(--red); }
+.ghp-risk-cell.cell-off-green  { border-left-color: rgba(48,209,88,0.4); }
+.ghp-risk-cell.cell-off-yellow { border-left-color: rgba(229,187,118,0.4); }
+.ghp-risk-cell.cell-off-red    { border-left-color: rgba(255,69,58,0.4); }
+.ghp-risk-cell.flag-on  { box-shadow: inset 0 1px 0 rgba(255,140,26,0.2); }
+.ghp-risk-row-label {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-top: var(--space-sm);
+  margin-bottom: 2px;
+}
+@media (max-width: 900px) {
+  .ghp-risk-binary-row { grid-template-columns: 1fr; }
+  .ghp-risk-crosstab { grid-template-columns: 1fr; }
 }
