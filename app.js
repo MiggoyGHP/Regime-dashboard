@@ -624,6 +624,75 @@ function applyEquityVisibility() {
   }
 }
 
+// --- Risk Flag Pill (3-state: All / Flag ON / Flag OFF) ---
+const RISK_PILL_CONTAINERS = ['riskflag-pill-overview', 'riskflag-pill-analysis'];
+
+function getRiskFlagPillState() {
+  if (!selectedRiskFlags) return 'all';
+  const hasOn = selectedRiskFlags.has('On');
+  const hasOff = selectedRiskFlags.has('Off');
+  if (hasOn && hasOff) return 'all';
+  if (hasOn) return 'on';
+  if (hasOff) return 'off';
+  return 'all';
+}
+
+function setRiskFlagPillState(state) {
+  // Mutate the existing Set in place — the dropdown's setupMultiSelect closure
+  // captures this Set reference, so reassigning would desync the dropdown.
+  if (!selectedRiskFlags) selectedRiskFlags = new Set();
+  selectedRiskFlags.clear();
+  if (state === 'on') selectedRiskFlags.add('On');
+  else if (state === 'off') selectedRiskFlags.add('Off');
+  else { selectedRiskFlags.add('On'); selectedRiskFlags.add('Off'); }
+
+  // Sync the multi-select dropdown panel checkboxes & button label
+  const panel = document.getElementById('riskflag-multi-panel');
+  if (panel) {
+    panel.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+      if (cb.hasAttribute('data-select-all')) {
+        cb.checked = (state === 'all');
+        cb.indeterminate = (state !== 'all');
+      } else {
+        const v = cb.value;
+        cb.checked = (state === 'all') || (state === 'on' && v === 'On') || (state === 'off' && v === 'Off');
+      }
+    });
+    const btn = document.getElementById('riskflag-multi-btn');
+    if (btn) {
+      if (state === 'all') { btn.textContent = 'All Risk Flags'; btn.classList.remove('filtered'); }
+      else { btn.textContent = '1 of 2 Risk Flags'; btn.classList.add('filtered'); }
+    }
+  }
+  currentPage = 1;
+  render();
+}
+
+function renderRiskFlagPill(containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const state = getRiskFlagPillState();
+  const items = [
+    { key: 'all', label: 'All' },
+    { key: 'on',  label: '🟠 Flag ON' },
+    { key: 'off', label: 'Flag OFF' },
+  ];
+  container.innerHTML = items.map(it =>
+    `<button class="riskflag-pill-btn state-${it.key}${state === it.key ? ' active' : ''}" data-pill-state="${it.key}">${it.label}</button>`
+  ).join('');
+  container.querySelectorAll('.riskflag-pill-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const next = btn.dataset.pillState;
+      if (next === getRiskFlagPillState()) return;
+      setRiskFlagPillState(next);
+    });
+  });
+}
+
+function renderAllRiskFlagPills() {
+  for (const id of RISK_PILL_CONTAINERS) renderRiskFlagPill(id);
+}
+
 function setupOverlayToggles() {
   document.querySelectorAll('.indicator-toggle[data-overlay]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -810,7 +879,7 @@ function setupTableControls() {
     'All Trade Types', 'Trade Types'
   );
   setupMultiSelect('riskflag-multi', ['On', 'Off'],
-    v => v === 'On' ? 'Risk flag ON' : 'Risk flag OFF',
+    v => v === 'On' ? '🟠 Orange flag ON' : 'Orange flag OFF',
     selectedRiskFlags, s => { selectedRiskFlags = s; currentPage = 1; render(); },
     'All Risk Flags', 'Risk Flags'
   );
@@ -907,6 +976,7 @@ function render() {
     t.exitRegimeColor = getRegimeColorForDate(t.exitDate, regimeKey);
   }
   updateFilterBanner();
+  renderAllRiskFlagPills();
   renderStatBar();
   renderRegimeColorCards();
   renderGhpRiskCards();
@@ -1465,7 +1535,6 @@ function createEquityChart() {
   });
   equityChart.priceScale('orangeRisk').applyOptions({
     visible: false, scaleMargins: RISK_BAND_CONFIG.scaleMargins,
-    autoScale: false,
   });
   equityLineSeries = equityChart.addLineSeries({
     color: '#e5bb76', lineWidth: 2,
@@ -1567,7 +1636,6 @@ function createDrawdownChart() {
   });
   drawdownChart.priceScale('orangeRisk').applyOptions({
     visible: false, scaleMargins: RISK_BAND_CONFIG.scaleMargins,
-    autoScale: false,
   });
   drawdownChart.priceScale('regime').applyOptions({
     visible: false, scaleMargins: { top: 0, bottom: 0 },
@@ -1798,7 +1866,6 @@ function renderTradeChart(trade) {
   });
   tradeChart.priceScale('tradeOrangeRisk').applyOptions({
     visible: false, scaleMargins: RISK_BAND_CONFIG.scaleMargins,
-    autoScale: false,
   });
   const tradeDates = candleData.map(d => d.time);
   const tradeRegimeBands = buildRegimeBandData(tradeDates, regimeKey);

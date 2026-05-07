@@ -1463,6 +1463,68 @@ tbody td { padding: 10px 12px; }
   .replay-charts { grid-template-columns: 1fr; }
 }
 
+/* --- Risk Flag pill (3-state: All / Flag ON / Flag OFF) --- */
+.view-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+  margin-top: var(--space-lg);
+  margin-bottom: var(--space-sm);
+}
+.view-section-header .view-section-title {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+.riskflag-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  padding: 3px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.riskflag-pill::before {
+  content: 'Risk flag:';
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 0 8px 0 10px;
+}
+.riskflag-pill-btn {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  white-space: nowrap;
+}
+.riskflag-pill-btn:hover { color: var(--foreground); }
+.riskflag-pill-btn.active { color: var(--foreground); }
+.riskflag-pill-btn.active.state-all {
+  background: rgba(229, 187, 118, 0.18);
+  border-color: rgba(229, 187, 118, 0.5);
+  color: var(--primary);
+}
+.riskflag-pill-btn.active.state-on {
+  background: var(--orange-bg);
+  border-color: var(--orange);
+  color: var(--orange-bright);
+}
+.riskflag-pill-btn.active.state-off {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: var(--foreground);
+}
+
 /* --- GHP Risk Signal — orange flag panel --- */
 .ghp-risk-section {
   margin-top: var(--space-lg);
